@@ -110,6 +110,8 @@ class Settings(object):
         self.trkMode            = 1       # 0 - Channel-serial tracking;
                                           # 1 - Channel-parallel tracking;
         # Select the Python, SIMD or GPU correlator backend.
+        # When correlatorType is 1, correlator.py automatically loads the x86 SIMD
+        # or ARM NEON correlator according to the platform architecture.
         self.correlatorType     = 2       # 0 - Python correlator;
                                           # 1 - SIMD correlator;
                                           # 2 - GPU correlator;
@@ -225,7 +227,7 @@ class Settings(object):
             sampleSize = np.dtype(self.dataType).itemsize
             fid.seek(self.dataAdaptCoeff * self.skipNumberOfSamples * sampleSize, 0)
 
-            # Read ten complete B2a-code periods of the input signal.
+            # Read ten complete code periods of the input signal.
             sampleCount = self.dataAdaptCoeff * 10 * self.samplesPerCode
             data = np.fromfile(fid, self.dataType, sampleCount)
 
@@ -322,9 +324,10 @@ class Settings(object):
 
         First, acquisition identifies the satellites present in the configured
         data file. The code and carrier of each acquired signal are then
-        tracked and their coherent-integration results are stored. Finally,
-        the navigation messages are decoded, pseudoranges and receiver
-        positions are calculated, and the requested result plots are produced.
+        tracked and their coherent-integration results are stored.
+        Navigation messages are decoded and pseudoranges and receiver
+        positions are calculated when sufficient navigation data are
+        available. The requested result plots are then produced.
 
         The processing sequence is:
 
@@ -397,15 +400,19 @@ class Settings(object):
         # pseudoranges, and determine the receiver position.
         import postNavigation
         navigationEngine = postNavigation.NavigationEngine(self)
+        # Run navigation unless saved navigation results are requested.
         if not self.skipNavigation:
             navigationEngine.navigationRun(trackResults)
             navSolutions = navigationEngine.navSolutions
             eph = navigationEngine.eph
+            # Save the navigation results and ephemeris data as one tuple.
             with open(self.navPklName,"wb") as fp:
                 pickle.dump((navSolutions,eph),fp)
         else:
+            # Restore the saved navigation results and ephemeris data.
             with open(self.navPklName,"rb") as fp:
                 navSolutions, eph = pickle.load(fp)
+            # Attach the restored results to the post-navigation engine.
             navigationEngine.navSolutions = navSolutions
             navigationEngine.eph = eph
 
@@ -415,7 +422,7 @@ class Settings(object):
             trackingEngine.plotTracking()
 
         #--- Plot navigation --------------------------------------------------
-        # Plot the calculated navigation solution.
+        # Plot the calculated navigation solution when requested.
         if self.plotNavigation:
             navigationEngine.plotNavigation()
 

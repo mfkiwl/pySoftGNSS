@@ -31,24 +31,51 @@ Generate, sample, and correlate BDS-3 B1C codes.
 """
 
 import ctypes
+import sys
 import numpy as np
 
+# Use .dll on Windows; this loader expects .so on other platforms.
+dllSuffix = ".dll" if sys.platform == "win32" else ".so"
+
+
+def get_architecture():
+    import platform
+    # Map platform-specific architecture names to 'x86_64' or 'aarch64'.
+    machine = platform.machine().lower()
+
+    if machine in ("amd64", "x86_64"):
+        return "x86_64"
+    elif machine in ("aarch64", "arm64"):
+        return "aarch64"
+    else:
+        raise RuntimeError(f"Unsupported architecture: {machine}")
 
 #%% CPU SIMD correlator for channel-serial tracking
 class CorrSIMDSerialQMBOC:
-    """Call the channel-serial AVX2 QMBOC tracking correlator."""
+    """Call the channel-serial CPU SIMD QMBOC correlator (AVX2 or NEON)."""
 
     def __init__(self):
-        """Load the SIMD DLL and declare its ctypes interface.
-        """
-        dllPath = "../native_Correlators/corrSIMDSerialQMBOC.dll"
+        """Load the native shared library and declare its ctypes interface."""
+        # Identify the architecture used to select the native SIMD backend.
+        arch = get_architecture()
+
+        # Select the AVX2 library for x86_64 or the NEON library for AArch64.
+        if arch == "x86_64":
+            dllPath = f"../native_Correlators/corrX86SIMDSerialQMBOC{dllSuffix}"
+        elif arch == "aarch64":
+            dllPath = f"../native_Correlators/corrNeonSIMDSerialQMBOC{dllSuffix}"
+
+        # Resolve the relative library path from the current working directory.
         self._simdLibrary = ctypes.CDLL(dllPath)
 
+        # Validate 1-D, C-contiguous NumPy arrays when calling the native function.
+        # IF samples use int16; code chips use int32. No data conversion is performed.
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
 
+        # Match the argument types and order of the exported C corrEngine() interface.
         self._simdLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
@@ -64,7 +91,7 @@ class CorrSIMDSerialQMBOC:
         
         self._simdLibrary.corrEngine.restype = ctypes.POINTER(ctypes.c_double)
 
-        # This is the clearup function.
+        # Declare the cleanup function for the reusable native buffers.
         self._simdLibrary.corrEngineFree.argtypes = []
         self._simdLibrary.corrEngineFree.restype = None
 
@@ -134,7 +161,7 @@ class CorrGPUSerialQMBOC:
     def __init__(self):
         """Load the CUDA DLL and declare its ctypes interface.
         """
-        dllPath = "../native_Correlators/corrGPUSerialQMBOC.dll"
+        dllPath = f"../native_Correlators/corrGPUSerialQMBOC{dllSuffix}"
         self._gpuLibrary = ctypes.CDLL(dllPath)
 
         int16Vector = np.ctypeslib.ndpointer(
@@ -221,14 +248,25 @@ class CorrGPUSerialQMBOC:
 
 #%% CPU SIMD correlator for channel-parallel tracking
 class CorrSIMDParallelQMBOC:
-    """Call the channel-parallel AVX2 QMBOC tracking correlator."""
+    """Call the channel-parallel CPU SIMD QMBOC correlator (AVX2 or NEON)."""
 
     def __init__(self):
-        """Load the parallel SIMD DLL and declare its ctypes interface.
-        """
-        dllPath = "../native_Correlators/corrSIMDParallelQMBOC.dll"
+        """Load the native shared library and declare its ctypes interface."""
+        # Identify the architecture used to select the native SIMD backend.
+        arch = get_architecture()
+
+        # Select the AVX2 library for x86_64 or the NEON library for AArch64.
+        if arch == "x86_64":
+            dllPath = f"../native_Correlators/corrX86SIMDParallelQMBOC{dllSuffix}"
+        elif arch == "aarch64":
+            dllPath = f"../native_Correlators/corrNeonSIMDParallelQMBOC{dllSuffix}"
+
+        # Resolve the relative library path from the current working directory.
         self._simdLibrary = ctypes.CDLL(dllPath)
 
+        # Validate C-contiguous NumPy vectors and the 2-D int32 code table.
+        # IF samples use int16; phase vectors use float64; index vectors use int32.
+        # No data conversion is performed.
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
@@ -238,6 +276,7 @@ class CorrSIMDParallelQMBOC:
         float64Vector = np.ctypeslib.ndpointer(
             dtype=np.float64, ndim=1, flags="C_CONTIGUOUS")
 
+        # Match the argument types and order of the exported C corrEngine() interface.
         self._simdLibrary.corrEngine.argtypes = [
             ctypes.c_int,    # settings.fileType
             ctypes.c_int,    # rawSignal.size
@@ -257,7 +296,7 @@ class CorrSIMDParallelQMBOC:
         
         self._simdLibrary.corrEngine.restype = ctypes.POINTER(ctypes.c_double)
 
-        # The clearup function.
+        # Declare the cleanup function for the reusable native buffers.
         self._simdLibrary.corrEngineFree.argtypes = []
         self._simdLibrary.corrEngineFree.restype = None
 
@@ -325,6 +364,8 @@ class CorrSIMDParallelQMBOC:
         if not corrPointer:
             raise RuntimeError("SIMD parallel QMBOC correlator failed")
         corrValues = np.ctypeslib.as_array(corrPointer, shape=(18 * channelCnt,))
+        # The native output is channel-major and reused by later calls.
+        # Return an independent matrix with one channel per column.
         return corrValues.reshape(channelCnt, 18).T.copy()
 
     def close(self):
@@ -344,7 +385,7 @@ class CorrGPUParallelQMBOC:
         -------
             None
         """
-        dllPath = "../native_Correlators/corrGPUParallelQMBOC.dll"
+        dllPath = f"../native_Correlators/corrGPUParallelQMBOC{dllSuffix}"
         self._gpuLibrary = ctypes.CDLL(dllPath)
 
         int16Vector = np.ctypeslib.ndpointer(

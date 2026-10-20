@@ -89,7 +89,7 @@ class Settings(object):
 
         #%% Acquisition settings ==============================================
         # Enable GPU acceleration for acquisition.
-        self.gpuACQflag         = True               #  True - On; False - Off
+        self.gpuACQflag         = False              #  True - On; False - Off
         # Skip acquisition and restore the configured pickle file.
         self.skipAcquisition    = False
         # Acquisition pickle filename.
@@ -114,7 +114,9 @@ class Settings(object):
         self.trkMode            = 1       # 0 - Channel-serial tracking;
                                           # 1 - Channel-parallel tracking;
         # Select the Python, SIMD or GPU correlator backend.
-        self.correlatorType     = 0       # 0 - Python correlator;
+        # When correlatorType is 1, correlator.py automatically loads the x86 SIMD
+        # or ARM NEON correlator according to the platform architecture.
+        self.correlatorType     = 1       # 0 - Python correlator;
                                           # 1 - SIMD correlator;
                                           # 2 - GPU correlator;
         # Enable/disable full-band tracking using the BOC(6,1) component.
@@ -231,7 +233,7 @@ class Settings(object):
             sampleSize = np.dtype(self.dataType).itemsize
             fid.seek(self.dataAdaptCoeff * self.skipNumberOfSamples * sampleSize, 0)
 
-            # Read 100 ms of signal.
+            # Read ten complete code periods of the input signal.
             sampleCount = self.dataAdaptCoeff * 10 * self.samplesPerCode
             data = np.fromfile(fid, self.dataType, sampleCount)
 
@@ -403,15 +405,19 @@ class Settings(object):
         # pseudoranges, and determine the receiver position.
         import postNavigation
         navigationEngine = postNavigation.NavigationEngine(self)
+        # Run navigation unless saved navigation results are requested.
         if not self.skipNavigation:
             navigationEngine.navigationRun(trackResults)
             navSolutions = navigationEngine.navSolutions
             eph = navigationEngine.eph
+            # Save the navigation results and ephemeris data as one tuple.
             with open(self.navPklName,"wb") as fp:
                 pickle.dump((navSolutions,eph),fp)
         else:
+            # Restore the saved navigation results and ephemeris data.
             with open(self.navPklName,"rb") as fp:
                 navSolutions, eph = pickle.load(fp)
+            # Attach the restored results to the post-navigation engine.
             navigationEngine.navSolutions = navSolutions
             navigationEngine.eph = eph
 
@@ -421,7 +427,7 @@ class Settings(object):
             trackingEngine.plotTracking()
 
         #--- Plot navigation --------------------------------------------------
-        # Plot the calculated navigation solution.
+        # Plot the calculated navigation solution when requested.
         if self.plotNavigation:
             navigationEngine.plotNavigation()
 

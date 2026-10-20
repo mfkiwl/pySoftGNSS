@@ -24,7 +24,11 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#ifdef _WIN32
 #define DLL_EXPORT extern "C" __declspec(dllexport)
+#else
+#define DLL_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
 
 // ============================ Configuration ====================================
 #define THREADS_PER_BLOCK  256

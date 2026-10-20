@@ -31,24 +31,52 @@ Generate, sample, and correlate GPS L1 C/A codes.
 """
 
 import ctypes
+import sys
 
 import numpy as np
 
+# Use .dll on Windows; this loader expects .so on other platforms.
+dllSuffix = ".dll" if sys.platform == "win32" else ".so"
+
+def get_architecture():
+    import platform
+    # Map platform-specific architecture names to 'x86_64' or 'aarch64'.
+    machine = platform.machine().lower()
+
+    if machine in ("amd64", "x86_64"):
+        return "x86_64"
+    elif machine in ("aarch64", "arm64"):
+        return "aarch64"
+    else:
+        raise RuntimeError(f"Unsupported architecture: {machine}")
+
 #%% CPU SIMD correlator for channel-serial tracking
 class CorrSIMDSerialBPSK:
-    """Call the channel-serial AVX2 BPSK tracking correlator."""
+    """Call the channel-serial CPU SIMD BPSK correlator (AVX2 or NEON)."""
 
     def __init__(self):
-        """Load the SIMD DLL and declare its ctypes interface.
-        """
-        dllPath = "../native_Correlators/corrSIMDSerialBPSK.dll"
+        """Load the native shared library and declare its ctypes interface."""
+
+        # Identify the architecture used to select the native SIMD backend.
+        arch = get_architecture()
+
+        # Select the AVX2 library for x86_64 or the NEON library for AArch64.
+        if arch == "x86_64":
+            dllPath = f"../native_Correlators/corrX86SIMDSerialBPSK{dllSuffix}"
+        elif arch == "aarch64":
+            dllPath = f"../native_Correlators/corrNeonSIMDSerialBPSK{dllSuffix}"  
+
+        # Resolve the relative library path from the current working directory.
         self._simdLibrary = ctypes.CDLL(dllPath)
 
+        # Validate 1-D, C-contiguous NumPy arrays when calling the native function.
+        # IF samples use int16; code chips use int32. No data conversion is performed.
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
 
+        # Match the argument types and order of the exported C corrEngine() interface.
         self._simdLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
@@ -129,7 +157,7 @@ class CorrGPUSerialBPSK:
     def __init__(self):
         """Load the CUDA DLL and declare its ctypes interface.
         """
-        dllPath = "../native_Correlators/corrGPUSerialBPSK.dll"
+        dllPath = f"../native_Correlators/corrGPUSerialBPSK{dllSuffix}"
         self._gpuLibrary = ctypes.CDLL(dllPath)
 
         int16Vector = np.ctypeslib.ndpointer(
@@ -217,7 +245,17 @@ class CorrSIMDParallelBPSK:
     def __init__(self):
         """Load the parallel SIMD DLL and declare its ctypes interface.
         """
-        dllPath = "../native_Correlators/corrSIMDParallelBPSK.dll"
+        
+        # Identify the architecture used to select the native SIMD backend.
+        arch = get_architecture()
+
+        # Select the AVX2 library for x86_64 or the NEON library for AArch64.
+        if arch == "x86_64":
+            dllPath = f"../native_Correlators/corrX86SIMDParallelBPSK{dllSuffix}"
+        elif arch == "aarch64":
+            dllPath = f"../native_Correlators/corrNeonSIMDParallelBPSK{dllSuffix}"  
+
+        # Resolve the relative library path from the current working directory.
         self._simdLibrary = ctypes.CDLL(dllPath)
 
         int16Vector = np.ctypeslib.ndpointer(
@@ -332,7 +370,7 @@ class CorrGPUParallelFusedBPSK:
         -------
             None
         """
-        dllPath = "../native_Correlators/corrGPUParallelFusedBPSK.dll"
+        dllPath = f"../native_Correlators/corrGPUParallelFusedBPSK{dllSuffix}"
         self._gpuLibrary = ctypes.CDLL(dllPath)
 
         int16Vector = np.ctypeslib.ndpointer(

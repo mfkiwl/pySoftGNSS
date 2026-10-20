@@ -254,7 +254,11 @@ class TrackingEngine():
             CNoValue = np.zeros(3)
             tempCNoValue = np.zeros(3)
             # OC2 has 50 symbols, one per 20 ms coherent integration.
-            OC2SignSeq = 1-2*np.asarray(settings.OC2, dtype=np.int8)
+            OC2 = np.array([
+                0, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0,
+                1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0,
+                0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0], dtype=np.int8)
+            OC2SignSeq = 1-2*np.asarray(OC2, dtype=np.int8)
             oc2StartIdx = -1
             oc2EstFirst = round(0.3/settings.intTime)
             oc2EstLen = round(0.3/settings.intTime)
@@ -572,7 +576,11 @@ class TrackingEngine():
         CNoValue = np.zeros(3)
         cnoSmoothState = np.zeros((channelCnt, 3))
         # Per-channel OC2 phase-estimation state.
-        OC2SignSeq = 1-2*np.asarray(settings.OC2, dtype=np.int8)
+        OC2 = np.array([
+            0, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0,
+            1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0,
+            0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0], dtype=np.int8)
+        OC2SignSeq = 1-2*np.asarray(OC2, dtype=np.int8)
         oc2StartIdx = np.full(channelCnt, -1, dtype=np.int32)
         oc2EstFirst = round(0.3/settings.intTime)
         oc2EstLen = round(0.3/settings.intTime)

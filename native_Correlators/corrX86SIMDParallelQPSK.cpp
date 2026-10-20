@@ -1,160 +1,158 @@
 /*================================================================================
- * Filename: corrSIMDSerialQMBOC.cpp
- * Description: AVX2 SIMD single-channel QMBOC tracking correlator exposed
+ * Filename: corrX86SIMDParallelQPSK.cpp
+ * Description: AVX2 SIMD channel-parallel QPSK tracking correlator exposed
  *              through a small C ABI for Python ctypes.
  *
  * Authors: Yafeng Li (School of Automation, Beijing Information Science and Technology University)
  * Time: Aug, 1, 2026
  *
- * The core processing stages are intentionally kept aligned with the
- * channel-parallel SIMD correlator:
+ * The core processing stages are intentionally organized as:
  *   1) mixCarrReal() / mixCarrComplex()
  *   2) localCodeGen()
  *   3) correlator()
  *
- * This file processes one channel and one code period per call. The first
- * corrEngine() call allocates reusable work buffers; corrEngineFree() releases
- * them after channel-serial tracking has finished.
+ * One corrEngine() call processes every active channel for one code period.
+ * The first call allocates reusable buffers; corrEngineFree() releases them.
  *==============================================================================*/
-
+ 
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <math.h>
 #include <string.h>
+/* ------- SIMD ------- */
 #include <emmintrin.h>
 #include <tmmintrin.h>
 #include <immintrin.h>
 
 typedef size_t mwSize;
 
+#ifdef _WIN32
 #define DLL_EXPORT extern "C" __declspec(dllexport)
+#else
+#define DLL_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
 
 /* Settings struct -------------------------------------------------------------
- * This structure stores the receiver settings cached by the SIMD correlator.
- * fileType       : 1 - real samples; 2 - interleaved complex samples
+ * This structure stores the receiver settings required by the SIMD correlator.
+ * fileType       : 1 - real samples; 2 - complex samples
  * rShiftBits     : number of right-shift bits for IF data to prevent SIMD
  *                  correlator overflow when ADC valid bits occupy the high bits
- * earlyLateSpc remains a per-call corrEngine() argument.
+ * earlyLateSpc   : half of the early - late code correlation spacing(chips)
  *------------------------------------------------------------------------------*/
 typedef struct
 {
-	int fileType;        /* 1 - real samples; 2 - complex samples */
-	int rShiftBits;      /* Right-shift bits for IF data before SIMD processing */
+	int  fileType;       /* 1 - real samples; 2 - complex samples */
+	int  rShiftBits;     /* Right-shift bits for IF data before SIMD processing */
 	double earlyLateSpc; /* half of the early - late code correlation spacing(chips) */
 } Settings;
 
 /* Function declaration ---------------------------------------------------------
  * mixCarrReal()        : mix local carrier with real IF data
  * mixCarrComplex()     : mix local carrier with complex IF data
- * localCodeGen()       : generate data/pilot BOC(1,1)/pilot BOC(6,1) EPL local code sequences
+ * localCodeGen()       : generate data/pilot early/prompt/late local code sequences
  * correlator()         : compute one branch of IE/QE/IP/QP/IL/QL correlation outputs
- * cleanup()            : release persistent host buffers
- * checkedMalloc()      : allocate non-aligned host memory and report allocation failure
- * checkedAlignedMalloc(): allocate 32-byte aligned host memory for SIMD buffers
- * gatherCode16()       : gather 16 local-code samples and repack them to int16 order
- * checkInputs()        : validate the fixed C ABI inputs on the first corrEngine() call
+ * cleanup()            : release persistent host buffers when corrEngineFree() is called
+ * checkedMalloc()      : allocate non-aligned host memory and report failure
+ * checkedAlignedMalloc(): Allocate 32-byte aligned host memory for SIMD buffers
+ * gatherCode16()       : Gather 16 local-code samples and repack them to int16 order
+ * checkInputs()        : validate fixed C ABI inputs on the first corrEngine() call
  *------------------------------------------------------------------------------*/
 void mixCarrReal(const short*, double, double, mwSize, short*, short*);
 void mixCarrComplex(const short*, const short*, double, double, mwSize, short*, short*);
 void localCodeGen(const int*, mwSize, double, double, double, mwSize, short**);
 void correlator(short*, short*, short**, mwSize, double*);
 void cleanup(void);
-static int checkInputs(int fileType, int blksize, const short* rawSignal,
-	const int* caCode, int codeLen);
 static void* checkedMalloc(size_t nbytes, const char* name);
 static void* checkedAlignedMalloc(size_t nbytes, const char* name);
 static __m256i gatherCode16(const int* caCode, __m256i Index_reg1, __m256i Index_reg2);
+static int checkInputs(int fileType, int rawSignalLen, const short* rawSignal,
+	const int* caCodeTable, int codeLen, int channelCnt,
+	const double* remCarrPhase, const double* carrPhaseStep,
+	const double* remCodePhase, const double* codePhaseStep,
+	const int* startIndex, const int* chSampleSize);
 
 /* Constants -------------------------------------------------------------------- */
 #define PI          3.1415926535897932  // pi 
 #define DPI         (2.0*PI)            // 2*pi 
 #define CSCALE      (1.0/16.0)          // carrier lookup table scale (LSB) 
-#define LOCAL_CODE_COUNT 9              // 3 branches x Early/Prompt/Late
+#define LOCAL_CODE_COUNT 6              // 2 branches x Early/Prompt/Late
 
-/* Persistent buffers -----------------------------------------------------------
+/* ------------- Persistent state shared by corrEngine() calls -----------------
  * initialized     : initialization flag for persistent buffers
  * iBasebandSignal : in-phase baseband samples after carrier wipeoff
  * qBasebandSignal : quadrature baseband samples after carrier wipeoff
  * rawSignalI/Q    : split I/Q branches for complex input data
- * localCode       : local code buffers for data/pilot BOC(1,1)/pilot BOC(6,1) EPL replicas
- * settings        : file type and input right shift cached on the first call
- *------------------------------------------------------------------------------*/
+ * localCode       : local code buffers for data/pilot Early, Prompt and Late replicas
+ * corrValues      : persistent output array, 12 correlation values per channel
+ * settings        : cached file layout and SIMD right-shift setting
+ *------------------------------------------------------------------------------*/ 
 static int initialized = 0;
-static short* iBasebandSignal = NULL;
-static short* qBasebandSignal = NULL;
-static short* rawSignalI = NULL;
-static short* rawSignalQ = NULL;
-static short** localCode = NULL;
+static short *iBasebandSignal = NULL, *qBasebandSignal = NULL, *rawSignalI = NULL, *rawSignalQ = NULL;
+static short ** localCode = NULL;
+static double* corrValues = NULL;
 static Settings settings;
 
 /* Python ctypes entry point ---------------------------------------------------
- * Args   : fileType       I   1 - real samples; 2 - interleaved I/Q samples
- *          blksize        I   physical number of int16 elements in rawSignal
- *          rShiftBits     I   input right shift used by the SIMD mixer
- *          earlyLateSpc   I   half early-late spacing (chips)
- *          rawSignal      I   int16 IF samples
- *          caCode         I   concatenated int32 guarded code branches
- *                              [B1CData, pilotBOC11, pilotBOC61]
- *          codeLen        I   guarded code length of one branch; caCode contains
- *                              3 * codeLen elements
- *          remCarrPhase   I   residual carrier phase (rad)
- *          carrPhaseStep  I   carrier phase increment (rad/sample)
- *          remCodePhase   I   residual code phase (chips)
- *          codePhaseStep  I   code phase increment (chips/sample)
- * Return : pointer to static [data E/P/L I/Q, pilotBOC11 E/P/L I/Q,
- *          pilotBOC61 E/P/L I/Q], or NULL on invalid input or first-call
- *          allocation failure. The pointer is overwritten by the next call.
+ * Args   : fileType, rawSignalLen, rShiftBits, earlyLateSpc and the channel
+ *          arrays supplied through the C ABI. caCodeTable is C-contiguous
+ *          with shape [channelCnt][2 * codeLen], and startIndex is zero-based.
+ * Return : persistent [channelCnt][12] array ordered as data then pilot
+ *          IE,QE,IP,QP,IL,QL values; overwritten by the next call.
  *------------------------------------------------------------------------------*/
-DLL_EXPORT double* corrEngine(int fileType, int blksize, int rShiftBits,
-	double earlyLateSpc, short* rawSignal, int* caCode, int codeLen,
-	double remCarrPhase, double carrPhaseStep, double remCodePhase,
-	double codePhaseStep)
+DLL_EXPORT double* corrEngine(int fileType, int rawSignalLen, int rShiftBits,
+	double earlyLateSpc, short* rawSignal, int* caCodeTable, int codeLen,
+	int channelCnt, double* remCarrPhase, double* carrPhaseStep,
+	double* remCodePhase, double* codePhaseStep, int* startIndex,
+	int* chSampleSize, int isDataRead)
 {
-	static double corrValues[2 * LOCAL_CODE_COUNT] = { 0.0 };
+	static size_t sampleIQSize;
 
-	/* --------------------- One-time persistent buffer allocation ---------------------
-	   Keep this framework close to corrSIMDParallelBPSK.cpp: allocate once on the first call
-	   and reuse the same aligned buffers on later code periods. The serial wrapper
-	   intentionally avoids per-call allocation and also avoids dynamic reallocation. */
-	if (!initialized) {
-		/* ----------------- Validate and cache the serial settings once -----------------
-		   This serial wrapper assumes the C ABI settings stay unchanged after the first
-		   call. If settings or input types change later, call corrEngineFree() and
-		   reinitialize so the cached framework state matches the new configuration. */
-		// gateway check
-		if (!checkInputs(fileType, blksize, rawSignal, caCode, codeLen)) {
+	if (!initialized)
+	{
+		/* Validate the C ABI inputs before allocating persistent buffers. Keep
+		   this check in the first-time initialization path so later calls remain
+		   on the existing fast path. */
+		if (!checkInputs(fileType, rawSignalLen, rawSignal, caCodeTable,
+			codeLen, channelCnt, remCarrPhase, carrPhaseStep,
+			remCodePhase, codePhaseStep, startIndex, chSampleSize)) {
 			return NULL;
 		}
-		// Basic setting
+
+		// Basic settings
 		settings.fileType = fileType;
 		settings.rShiftBits = rShiftBits;
+		// Sample size for the first channel
+		size_t blksize = (size_t)chSampleSize[0];
 
-		size_t rawSignalLen = (size_t)blksize;
 		if (settings.fileType == 2) {
-			rawSignalLen = rawSignalLen / 2;
+			sampleIQSize = (size_t)rawSignalLen / 2;
+			rawSignalI = (short*)checkedAlignedMalloc(sizeof(short) * sampleIQSize, "rawSignalI");
+			rawSignalQ = (short*)checkedAlignedMalloc(sizeof(short) * sampleIQSize, "rawSignalQ");
 		}
-		rawSignalLen = rawSignalLen + 100;
-		iBasebandSignal = (short*)checkedAlignedMalloc(sizeof(short) * rawSignalLen, "iBasebandSignal");
-		qBasebandSignal = (short*)checkedAlignedMalloc(sizeof(short) * rawSignalLen, "qBasebandSignal");
 
+		/* --------------------- Allocate memory --------------------- */
+		/* I/Q baseband signals with carrier wiped off. */
+		iBasebandSignal = (short*)checkedAlignedMalloc(sizeof(short) * (blksize + 100), "iBasebandSignal");
+		qBasebandSignal = (short*)checkedAlignedMalloc(sizeof(short) * (blksize + 100), "qBasebandSignal");
+		/* For local sampling code buffers:
+		   data Early/Prompt/Late plus pilot Early/Prompt/Late. */
 		localCode = (short**)checkedMalloc(sizeof(short*) * LOCAL_CODE_COUNT, "localCode");
 		if (localCode != NULL) {
-			for (int i = 0; i < LOCAL_CODE_COUNT; ++i) {
-				localCode[i] = (short*)checkedAlignedMalloc(sizeof(short) * rawSignalLen, "localCode[i]");
+			for (int i = 0; i < LOCAL_CODE_COUNT; i++) {
+				localCode[i] = (short*)checkedAlignedMalloc(sizeof(short) * (blksize + 100), "localCode[i]");
 			}
 		}
+		/* Persistent output array for each channel:
+		   entries 0..5  : data branch  [I_E Q_E I_P Q_P I_L Q_L]
+		   entries 6..11 : pilot branch [I_E Q_E I_P Q_P I_L Q_L]. */
+		corrValues = (double*)checkedMalloc(
+			sizeof(double) * 2 * LOCAL_CODE_COUNT * channelCnt, "corrValues");
 
-		if (settings.fileType == 2) {
-			rawSignalI = (short*)checkedAlignedMalloc(sizeof(short) * rawSignalLen, "rawSignalI");
-			rawSignalQ = (short*)checkedAlignedMalloc(sizeof(short) * rawSignalLen, "rawSignalQ");
-		}
-
-		if (iBasebandSignal == NULL || qBasebandSignal == NULL ||
-			localCode == NULL || localCode[0] == NULL || localCode[1] == NULL ||
-			localCode[2] == NULL || localCode[3] == NULL || localCode[4] == NULL ||
-			localCode[5] == NULL || localCode[6] == NULL || localCode[7] == NULL ||
-			localCode[8] == NULL ||
+		if (iBasebandSignal == NULL || qBasebandSignal == NULL || localCode == NULL ||
+			localCode[0] == NULL || localCode[1] == NULL || localCode[2] == NULL ||
+			localCode[3] == NULL || localCode[4] == NULL || localCode[5] == NULL ||
+			corrValues == NULL ||
 			(fileType == 2 && (rawSignalI == NULL || rawSignalQ == NULL))) {
 			cleanup();
 			return NULL;
@@ -162,39 +160,42 @@ DLL_EXPORT double* corrEngine(int fileType, int blksize, int rShiftBits,
 
 		initialized = 1;
 		printf("   SIMD DLL initialized ...\n");
-		printf("   Channel-serial tracking with the SIMD-accelerated correlator developed by Yafeng Li.\n");
+		printf("   Channel-parallel tracking with the SIMD-accelerated correlator developed by Yafeng Li.\n");
 	}
 
-	/* fileType and rShiftBits are fixed for the lifetime of the initialized
-	   engine. earlyLateSpc and all phase parameters remain per-call inputs. */
 	settings.earlyLateSpc = earlyLateSpc;
-
-	if (settings.fileType == 2) {
-		blksize = blksize / 2;
-		/* Split the interleaved serial rawSignal block into separate I/Q buffers so the
-		   complex SIMD mixer can reuse the exact same implementation as corrSIMDParallelQMBOC.cpp. */
-		for (int k = 0; k < blksize; ++k) {
+	/* ----- Separate rawSignal into I and Q branches for complex signals ------ */
+	if (isDataRead == 1 && settings.fileType == 2) {
+		for (size_t k = 0; k < sampleIQSize; ++k) {
 			rawSignalI[k] = rawSignal[2 * k];
 			rawSignalQ[k] = rawSignal[2 * k + 1];
 		}
 	}
 
-	/* --------------------- Initialize output and run the three-stage core ---------------------
-	   The output layout follows trkChannelsSerial.m directly:
-	     [data E/P/L I/Q, pilotBOC11 E/P/L I/Q, pilotBOC61 E/P/L I/Q]
-	   and the processing stages are intentionally unchanged from the shared SIMD core. */
-	if (settings.fileType == 1) {
-		mixCarrReal(rawSignal, carrPhaseStep, remCarrPhase, (mwSize)blksize, iBasebandSignal, qBasebandSignal);
-	} else {
-		mixCarrComplex(rawSignalI, rawSignalQ, carrPhaseStep, remCarrPhase, (mwSize)blksize, iBasebandSignal, qBasebandSignal);
+	for (int chInd = 0; chInd < channelCnt; ++chInd)
+	{
+		int* caCode = &caCodeTable[chInd * 2 * codeLen];
+		/* -------- Carrier wiping off, code generation and correlating -------- */
+		if (settings.fileType == 1) {
+			// For real data
+			mixCarrReal(rawSignal + startIndex[chInd], carrPhaseStep[chInd],
+				remCarrPhase[chInd], (mwSize)chSampleSize[chInd], iBasebandSignal, qBasebandSignal);
+		} else {
+			// For complex data
+			mixCarrComplex(rawSignalI + startIndex[chInd], rawSignalQ + startIndex[chInd],
+				carrPhaseStep[chInd], remCarrPhase[chInd], (mwSize)chSampleSize[chInd],
+				iBasebandSignal, qBasebandSignal);
+		}
+		// Generate data/pilot local code sequences
+		localCodeGen(caCode, (mwSize)codeLen, remCodePhase[chInd], codePhaseStep[chInd],
+			settings.earlyLateSpc, (mwSize)chSampleSize[chInd], localCode);
+		// Data branch correlator
+		correlator(iBasebandSignal, qBasebandSignal, localCode, (mwSize)chSampleSize[chInd],
+			corrValues + 12 * chInd);
+		// Pilot branch correlator
+		correlator(iBasebandSignal, qBasebandSignal, localCode + 3, (mwSize)chSampleSize[chInd],
+			corrValues + 12 * chInd + 6);
 	}
-	localCodeGen(caCode, (mwSize)codeLen, remCodePhase, codePhaseStep, settings.earlyLateSpc, (mwSize)blksize, localCode);
-	// For data branch
-	correlator(iBasebandSignal, qBasebandSignal, localCode, (mwSize)blksize, corrValues);
-	// For pilot BOC(1,1) branch
-	correlator(iBasebandSignal, qBasebandSignal, localCode+3, (mwSize)blksize, corrValues+6);
-	// For pilot BOC(6,1) branch
-	correlator(iBasebandSignal, qBasebandSignal, localCode+6, (mwSize)blksize, corrValues+12);
 	return corrValues;
 }
 
@@ -256,8 +257,7 @@ void mixCarrReal(const short *rawSignal, double carrPhaseStep, double remCarrPha
 	const __m128i local_sin = _mm_loadu_si128((__m128i *)sint);
 
     const short *IFData = rawSignal;
-	for ( ; IFData <= rawSignal + blksize - 16; IFData+=16,iBasebandSignal+=16,qBasebandSignal+=16)
-	{
+	for ( ; IFData <= rawSignal + blksize - 16; IFData+=16,iBasebandSignal+=16,qBasebandSignal+=16) {
 		/* ------------------ Inphase and quadrature carriers generation ------------------ */
 		/* Generate the carrier phase of 16 consecutive samples. Each AVX register
 		   holds 8 phase values; together carrPhase_reg1/carrPhase_reg2 cover the
@@ -473,19 +473,16 @@ void mixCarrComplex(const short* rawSignalI, const short* rawSignalQ, double car
 }
 
  /* Generate local code ----------------------------------------------------------
- * Generate local code sequences for the QMBOC data, pilot BOC(1,1), and
- * pilot BOC(6,1) branches.
- * Args   : int     *caCode          I   int32 concatenated QMBOC code table
- *                                      [B1CData(last,1..N,first),
- *                                       pilotBOC11(last,1..N,first),
- *                                       pilotBOC61(last,1..N,first)]
- *          mwSize codeLen           I   chip number of one branch
+ * Generate local code sequences for both data and pilot branches.
+ * Args   : int     *caCode          I   concatenated QPSK code table
+ *                                     [dataCode pilotCode]
+ *          mwSize codeLen           I   chip number of one branch code table
  *          double remCodePhase      I   initial code phase (chip)
  *          double codePhaseStep     I   code sampling interval (chip)
  *          double earlyLateSpc      I   half of the early-late code correlation spacing (chips)
  *          int    blksize           I   number of samples to be generated 
- *          short  *localCode        O   local code replica outputs arranged as
- *                                      {data E/P/L, pilotBOC11 E/P/L, pilotBOC61 E/P/L}
+ *          short  *localCode        O   local code replica outputs for
+ *                                     data/pilot Early, Prompt and Late
  * return : None 
  *------------------------------------------------------------------------------*/
 void localCodeGen(const int *caCode, mwSize codeLen, double remCodePhase, double codePhaseStep,
@@ -497,20 +494,18 @@ void localCodeGen(const int *caCode, mwSize codeLen, double remCodePhase, double
 	if (remCodePhase >= codeLen)
 		remCodePhase -= floor(remCodePhase / codeLen)*codeLen;
 	/* Keep the large integer part of the code phase out of AVX float
-	   arithmetic. Long QMBOC codes can pass million-chip
+	   arithmetic. Long QPSK codes such as GPS L2C can pass million-chip
 	   absolute phases; converting that whole value to float loses fractional
 	   chip precision. */
 	const int codeIndexBase = (int)floor(remCodePhase);
 	remCodePhase -= (double)codeIndexBase;
 	
-	/* caCode is laid out as [B1CData(last,1..N,first), pilotBOC11(last,1..N,first),
-	   pilotBOC61(last,1..N,first)].
-	   Shifting the starting phase by -earlyLateSpc + 1.0 means the early replica
-	   can safely address one chip before the nominal prompt position, and the late
-	   replica can safely walk one chip beyond the end without needing modulo per sample. */
+	/* Each branch of caCode is laid out as [lastChip, code(1..N), firstChip].
+	   Shifting the starting phase by -earlyLateSpc + 1.0 means the early replica can safely
+	   address one chip before the nominal prompt position, and the late replica
+	   can safely walk one chip beyond the end without needing modulo per sample. */
 	short *eCodeD = localCode[0], *pCodeD = localCode[1], * lCodeD = localCode[2];
-	short* eCodeP11 = localCode[3], * pCodeP11 = localCode[4], * lCodeP11 = localCode[5];
-	short* eCodeP61 = localCode[6], * pCodeP61 = localCode[7], * lCodeP61 = localCode[8];
+	short* eCodeP = localCode[3], * pCodeP = localCode[4], * lCodeP = localCode[5];
 
 	__m256i Index_reg1, Index_reg2, EPL_reg;
 	__m256 codePhase_reg1, codePhase_reg2;
@@ -525,9 +520,7 @@ void localCodeGen(const int *caCode, mwSize codeLen, double remCodePhase, double
 	const __m256i codeIndexBase_reg = _mm256_set1_epi32(codeIndexBase);
 
 	for ( ; eCodeD <= localCode[0] + blksize - 16;
-        eCodeD += 16, pCodeD += 16, lCodeD += 16,
-        eCodeP11 += 16, pCodeP11 += 16, lCodeP11 += 16,
-        eCodeP61 += 16, pCodeP61 += 16, lCodeP61 += 16)
+        eCodeD += 16, pCodeD += 16, lCodeD += 16, eCodeP += 16, pCodeP += 16, lCodeP += 16)
 	{
 		/* ----------------------- Early code generation ----------------------- */
 		/* Generate the code phase of 16 successive samples. Because the phase is
@@ -544,11 +537,9 @@ void localCodeGen(const int *caCode, mwSize codeLen, double remCodePhase, double
 		EPL_reg = gatherCode16(caCode, Index_reg1, Index_reg2);
 		_mm256_store_si256((__m256i*)eCodeD, EPL_reg);
 
-		/* Pilot BOC(1,1) and BOC(6,1) early branches use the second and third code-table spans. */
+		/* Pilot early branch uses the second half of the concatenated code table. */
 		EPL_reg = gatherCode16(caCode + codeLen, Index_reg1, Index_reg2);
-		_mm256_store_si256((__m256i*)eCodeP11, EPL_reg);
-		EPL_reg = gatherCode16(caCode + 2 * codeLen, Index_reg1, Index_reg2);
-		_mm256_store_si256((__m256i*)eCodeP61, EPL_reg);
+		_mm256_store_si256((__m256i*)eCodeP, EPL_reg);
 
 		/* ----------------------- Prompt code generation ----------------------- */
 		/* Prompt is just Early shifted by +earlyLateSpc chips. */
@@ -562,9 +553,7 @@ void localCodeGen(const int *caCode, mwSize codeLen, double remCodePhase, double
 		_mm256_store_si256((__m256i*)pCodeD, EPL_reg);
 
 		EPL_reg = gatherCode16(caCode + codeLen, Index_reg1, Index_reg2);
-		_mm256_store_si256((__m256i*)pCodeP11, EPL_reg);
-		EPL_reg = gatherCode16(caCode + 2 * codeLen, Index_reg1, Index_reg2);
-		_mm256_store_si256((__m256i*)pCodeP61, EPL_reg);
+		_mm256_store_si256((__m256i*)pCodeP, EPL_reg);
 		/* ----------------------- Late code generation ----------------------- */
 		/* Late is Prompt shifted once more by +earlyLateSpc, i.e. Early + 2*spacing. */
 		codePhase_reg1 = _mm256_add_ps(codePhase_reg1, earlyLateSpc_reg);
@@ -577,9 +566,7 @@ void localCodeGen(const int *caCode, mwSize codeLen, double remCodePhase, double
 		_mm256_store_si256((__m256i*)lCodeD, EPL_reg);
 
 		EPL_reg = gatherCode16(caCode + codeLen, Index_reg1, Index_reg2);
-		_mm256_store_si256((__m256i*)lCodeP11, EPL_reg);
-		EPL_reg = gatherCode16(caCode + 2 * codeLen, Index_reg1, Index_reg2);
-		_mm256_store_si256((__m256i*)lCodeP61, EPL_reg);
+		_mm256_store_si256((__m256i*)lCodeP, EPL_reg);
 
 		/* Move to the next batch of 16 code samples. */
 		stepNumber_reg = _mm256_add_ps(stepNumber_reg, sixteenStep);
@@ -590,20 +577,15 @@ void localCodeGen(const int *caCode, mwSize codeLen, double remCodePhase, double
 	double tempCodePhase = (blksize / 16) * 16 * codePhaseStep + remCodePhase;
 	double twoEarlyLateSpc = earlyLateSpc * 2;
 	for (; eCodeD < localCode[0] + blksize;
-        ++eCodeD, ++pCodeD, ++lCodeD,
-        ++eCodeP11, ++pCodeP11, ++lCodeP11,
-        ++eCodeP61, ++pCodeP61, ++lCodeP61)
+        ++eCodeD, ++pCodeD, ++lCodeD, ++eCodeP, ++pCodeP, ++lCodeP)
 	{
 		/* Scalar tail keeps the same data/pilot Early/Prompt/Late geometry as the SIMD path. */
 		eCodeD[0] = caCode[codeIndexBase + (int)tempCodePhase];
 		pCodeD[0] = caCode[codeIndexBase + (int)(tempCodePhase + earlyLateSpc)];
 		lCodeD[0] = caCode[codeIndexBase + (int)(tempCodePhase + twoEarlyLateSpc)];
-		eCodeP11[0] = caCode[codeLen + codeIndexBase + (int)tempCodePhase];
-		pCodeP11[0] = caCode[codeLen + codeIndexBase + (int)(tempCodePhase + earlyLateSpc)];
-		lCodeP11[0] = caCode[codeLen + codeIndexBase + (int)(tempCodePhase + twoEarlyLateSpc)];
-		eCodeP61[0] = caCode[2 * codeLen + codeIndexBase + (int)tempCodePhase];
-		pCodeP61[0] = caCode[2 * codeLen + codeIndexBase + (int)(tempCodePhase + earlyLateSpc)];
-		lCodeP61[0] = caCode[2 * codeLen + codeIndexBase + (int)(tempCodePhase + twoEarlyLateSpc)];
+		eCodeP[0] = caCode[codeLen + codeIndexBase + (int)tempCodePhase];
+		pCodeP[0] = caCode[codeLen + codeIndexBase + (int)(tempCodePhase + earlyLateSpc)];
+		lCodeP[0] = caCode[codeLen + codeIndexBase + (int)(tempCodePhase + twoEarlyLateSpc)];
 		tempCodePhase += codePhaseStep;
 	}
 }
@@ -614,7 +596,8 @@ void localCodeGen(const int *caCode, mwSize codeLen, double remCodePhase, double
  *          short  *qBasebandSignal    I   Q component of input signal with carrier wiped off
  *          short  **localCode         I   one three-replica branch {E, P, L}
  *          mwSize blksize             I   number of samples to be generated
- *          double *corrValues         O   outputs of one branch arranged as [I_E Q_E I_P Q_P I_L Q_L]
+ *          double *corrValues         O   outputs of one branch arranged as
+ *                                        [I_E Q_E I_P Q_P I_L Q_L]
  * Return : None
  *------------------------------------------------------------------------------*/
 void correlator(short *iBasebandSignal, short *qBasebandSignal, short **localCode, mwSize blksize, double *corrValues)
@@ -639,7 +622,7 @@ void correlator(short *iBasebandSignal, short *qBasebandSignal, short **localCod
 	Q_P_reg = _mm256_setzero_si256();
 	Q_L_reg = _mm256_setzero_si256();
 	
-	for (; eCode <= localCode[0] + blksize - 16; eCode += 16, pCode += 16, lCode += 16, pI += 16, pQ += 16){
+	for (; eCode <= localCode[0] + blksize - 16; eCode += 16, pCode += 16, lCode += 16, pI += 16, pQ += 16) {
 		
 		/* --------------- Load IF signal with carrier wiped off --------------- */
 		/* These loads are aligned because iBasebandSignal/qBasebandSignal/localCode
@@ -690,7 +673,7 @@ void correlator(short *iBasebandSignal, short *qBasebandSignal, short **localCod
 
 	/* ----------------- For sampling points outside the SIMD iteration  ----------------- */
 	/* Scalar cleanup directly accumulates the remaining 0..15 samples. */
-	for (; eCode < localCode[0] + blksize; ++pI, ++pQ, ++eCode, ++pCode, ++lCode){
+	for (; eCode < localCode[0] + blksize; ++pI, ++pQ, ++eCode, ++pCode, ++lCode) {
 		I_E += (long long)pI[0] * (long long)eCode[0];
 		Q_E += (long long)pQ[0] * (long long)eCode[0];
 		I_P += (long long)pI[0] * (long long)pCode[0];
@@ -698,9 +681,8 @@ void correlator(short *iBasebandSignal, short *qBasebandSignal, short **localCod
 		I_L += (long long)pI[0] * (long long)lCode[0];
 		Q_L += (long long)pQ[0] * (long long)lCode[0];
 	}
-	/* Convert one EPL branch's six I/Q outputs to double precision and undo the 16x
-	   carrier LUT amplitude scaling introduced during carrier wipeoff. The caller
-	   invokes this function once each for data, pilot BOC(1,1), and pilot BOC(6,1). */
+	/* Convert the six correlator outputs to double precision and undo the 16x
+	   carrier LUT amplitude scaling introduced during carrier wipeoff. */
     corrValues[0] = (double)I_E * CSCALE;
     corrValues[1] = (double)Q_E * CSCALE;
     corrValues[2] = (double)I_P * CSCALE;
@@ -756,29 +738,33 @@ static __m256i gatherCode16(const int* caCode, __m256i Index_reg1, __m256i Index
 }
 
 /* checkInputs ----------------------------------------------------------------
- * Validate the fixed interface values once, before persistent buffers are
- * allocated. Later calls reuse the initialized configuration.
+ * Validate fixed interface values before persistent buffers are allocated.
  * Return : 1 for valid input; 0 otherwise
  *------------------------------------------------------------------------------*/
-static int checkInputs(int fileType, int blksize, const short* rawSignal,
-	const int* caCode, int codeLen)
+static int checkInputs(int fileType, int rawSignalLen, const short* rawSignal,
+	const int* caCodeTable, int codeLen, int channelCnt,
+	const double* remCarrPhase, const double* carrPhaseStep,
+	const double* remCodePhase, const double* codePhaseStep,
+	const int* startIndex, const int* chSampleSize)
 {
-	if (rawSignal == NULL || caCode == NULL || blksize <= 0 || codeLen <= 0 ||
+	if (rawSignal == NULL || caCodeTable == NULL || remCarrPhase == NULL ||
+		carrPhaseStep == NULL || remCodePhase == NULL || codePhaseStep == NULL ||
+		startIndex == NULL || chSampleSize == NULL || rawSignalLen <= 0 ||
+		codeLen <= 0 || channelCnt <= 0 ||
 		(fileType != 1 && fileType != 2)) {
-		printf("   Invalid input arguments for corrSIMDSerialQMBOC.\n");
+		printf("   Invalid input arguments for corrX86SIMDParallelQPSK.\n");
 		return 0;
 	}
 	return 1;
 }
 
 /* cleanup --------------------------------------------------------------------
- * Release all persistent host buffers. It is safe to call repeatedly.
+ * Release all persistent host buffers when Python calls corrEngineFree().
  * Return : None
  *------------------------------------------------------------------------------*/
 void cleanup(void)
 {
 	printf("   SIMD DLL is terminating, destroying allocated memory ...\n");
-
 	/* --------------- Free memory --------------- */
 	if (localCode != NULL) {
 		for (int i = 0; i < LOCAL_CODE_COUNT; ++i) {
@@ -795,5 +781,6 @@ void cleanup(void)
 	if (qBasebandSignal != NULL) { _mm_free(qBasebandSignal); qBasebandSignal = NULL; }
 	if (rawSignalI != NULL) { _mm_free(rawSignalI); rawSignalI = NULL; }
 	if (rawSignalQ != NULL) { _mm_free(rawSignalQ); rawSignalQ = NULL; }
+	if (corrValues != NULL) { free(corrValues); corrValues = NULL; }
 	initialized = 0;
 }

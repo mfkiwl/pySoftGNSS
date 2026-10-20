@@ -105,6 +105,8 @@ class Settings(object):
         self.trkMode            = 1       # 0 - Channel-serial tracking;
                                           # 1 - Channel-parallel tracking;
         # Select the Python, SIMD or GPU correlator backend.
+        # When correlatorType is 1, correlator.py automatically loads the x86 SIMD
+        # or ARM NEON correlator according to the platform architecture.
         self.correlatorType     = 2       # 0 - Python correlator;
                                           # 1 - SIMD correlator;
                                           # 2 - GPU correlator;
@@ -200,99 +202,132 @@ class Settings(object):
     def probeData(self):
         """Plot raw data in the time and frequency domains and a histogram.
 
+        The configured part of the raw signal is read and displayed before
+        receiver processing starts.
+
         Returns
         -------
             None
         """
         import matplotlib.pyplot as plt
         from scipy.signal import welch
-        from scipy.signal.windows.windows import hamming
-        import sys
-
-        # Validate the configured input filename and scalar data type.
-        if not isinstance(self.fileName, str):
-            raise TypeError('File name must be a string')
-            sys.exit()
-
-        if self.dataType not in ('int8', 'int16'):
-            raise TypeError('Input IF dataType must be ', 'int8 or int16')
-            sys.exit()
+        from scipy.signal.windows import hamming
 
         #%% Generate plot of raw data =========================================
-        try:
-            with open(self.fileName, 'rb') as fid:
-                # Move the starting point of processing. Can be used to start the
-                # signal processing at any point in the data record (e.g. for long
-                # records).
-                if self.dataType == 'int16':
-                    fid.seek(self.dataAdaptCoeff * self.skipNumberOfSamples * 2,0)
-                elif self.dataType == 'int8':
-                    fid.seek(self.dataAdaptCoeff * self.skipNumberOfSamples,0)
+        with open(self.fileName, 'rb') as fid:
+            # Move the starting point of processing. This can be used to start
+            # signal processing at any point in a long data record.
+            sampleSize = np.dtype(self.dataType).itemsize
+            fid.seek(self.dataAdaptCoeff * self.skipNumberOfSamples * sampleSize, 0)
 
-                try:
-                    # Read ten complete E5b-code periods of the input signal.
-                    data = np.fromfile(fid, self.dataType,
-                                       self.dataAdaptCoeff * 10 * self.samplesPerCode)
-                except IOError:
-                    # Report an input read failure.
-                    print('Could not read enough data from the data file.')
-                    sys.exit()
+            # Read ten complete code periods of the input signal.
+            sampleCount = self.dataAdaptCoeff * 10 * self.samplesPerCode
+            data = np.fromfile(fid, self.dataType, sampleCount)
 
-                #--- Generate plot of raw data --------------------------------
-                plt.figure(100)
-                plt.clf()
+        if data.size < sampleCount:
+            raise OSError('Could not read enough data from the data file.')
 
-                #--- Frequency-domain plot ------------------------------------
-                freq, Pxxf = welch(data, fs=self.samplingFreq/1e6,
-                                   window = hamming(16384, False),
-                                   nperseg=16384,noverlap=1024, nfft=16384)
-                ax1 = plt.subplot(211)
-                ax1.semilogy(freq, Pxxf)
-                ax1.axis('tight')
-                ax1.grid()
-                ax1.set_xlabel('Frequency (MHz)')
-                ax1.set_ylabel('PSD magnitude')
-                ax1.set_title("Frequency domain plot")
-                ax1.set_xlim(0,max(freq))
+        #--- Initialization ---------------------------------------------------
+        plt.figure(100)
+        plt.clf()
 
-                #--- Time-domain plot -----------------------------------------
-                timeScale = np.arange(0,25e-3,1/self.samplingFreq)*1000
-                ax2 = plt.subplot(223)
-                ax2.plot(timeScale[1:1000], data[1:1000])
-                ax2.grid()
-                ax2.axis('tight')
-                ax2.set_xlabel('Time (ms)')
-                ax2.set_ylabel('Amplitude')
-                ax2.set_title("Time domain plot")
-                ax2.set_xticks(np.linspace(min(timeScale[1:1000]),
-                                           max(timeScale[1:1000]), 4))
+        if self.fileType == 2:
+            data = data[0::2] + 1j * data[1::2]
 
-                #--- Histogram ------------------------------------------------
-                ax3 = plt.subplot(224)
-                ax3.hist(data, bins='auto', density=True)
-                ax3.grid()
-                ax3.set_xlabel('Bin')
-                # Legacy label; density=True normalizes the histogram.
-                ax3.set_ylabel('Number in bin')
-                ax3.set_title("Histogram")
-                plt.grid(True)
-                plt.tight_layout()
-                plt.show()
-        #=== Error while opening the data file ================================
-        except Exception as e:
-            # There was an error, print it and exit
-            print(repr(e))
-            print('  Unable to read file ', self.fileName,'...')
-            print('  (settings in "initSettings.py" to reconfigure)')
-            sys.exit()
+        samplesToPlot = round(self.samplesPerCode/2)
+        timeScale = np.arange(samplesToPlot) / self.samplingFreq * 1000
 
+        #--- Time-domain plot -------------------------------------------------
+        if self.fileType == 1:
+            axTime = plt.subplot(2, 2, 3)
+            axTime.plot(timeScale, data[:samplesToPlot])
+            axTime.set_title('Time domain plot')
+            axTime.set_xlabel('Time (ms)')
+            axTime.set_ylabel('Amplitude')
+            axTime.axis('tight')
+            axTime.grid()
+        else:
+            axTimeI = plt.subplot(3, 2, 4)
+            axTimeI.plot(timeScale, np.real(data[:samplesToPlot]))
+            axTimeI.set_title('Time domain plot (I)')
+            axTimeI.set_xlabel('Time (ms)')
+            axTimeI.set_ylabel('Amplitude')
+            axTimeI.axis('tight')
+            axTimeI.grid()
+
+            axTimeQ = plt.subplot(3, 2, 3)
+            axTimeQ.plot(timeScale, np.imag(data[:samplesToPlot]))
+            axTimeQ.set_title('Time domain plot (Q)')
+            axTimeQ.set_xlabel('Time (ms)')
+            axTimeQ.set_ylabel('Amplitude')
+            axTimeQ.axis('tight')
+            axTimeQ.grid()
+
+        #--- Frequency-domain plot -------------------------------------------
+        rows = 2 if self.fileType == 1 else 3
+        axFreq = plt.subplot2grid((rows, 2), (0, 0), colspan=2)
+        freq, sigspec = welch(
+            data, fs=self.samplingFreq, window=hamming(32768, sym=False),
+            noverlap=2048, nfft=32768,
+            return_onesided=(self.fileType == 1))
+        if self.fileType == 2:
+            freq = np.fft.fftshift(freq)
+            sigspec = np.fft.fftshift(sigspec)
+        axFreq.plot(freq/1e6, 10*np.log10(sigspec))
+        axFreq.set_title('Frequency domain plot')
+        axFreq.set_xlabel('Frequency (MHz)')
+        axFreq.set_ylabel('Magnitude')
+        axFreq.axis('tight')
+        axFreq.grid()
+
+        #--- Histogram --------------------------------------------------------
+        if self.fileType == 1:
+            axHist = plt.subplot(2, 2, 4)
+            axHist.hist(data)
+            axHist.set_title('Histogram')
+            dmax = np.max(np.abs(data)) + 1
+            axHist.set_xlim(-dmax, dmax)
+            axHist.set_xlabel('Bin')
+            axHist.set_ylabel('Number in bin')
+            axHist.grid()
+        else:
+            axHistI = plt.subplot(3, 2, 6)
+            axHistI.hist(np.real(data), bins='auto')
+            axHistI.set_title('Histogram (I)')
+            dmax = np.max(np.abs(data)) + 1
+            axHistI.set_xlim(-dmax, dmax)
+            axHistI.set_xlabel('Bin')
+            axHistI.set_ylabel('Number in bin')
+            axHistI.grid()
+
+            axHistQ = plt.subplot(3, 2, 5)
+            axHistQ.hist(np.imag(data), bins='auto')
+            axHistQ.set_title('Histogram (Q)')
+            axHistQ.set_xlim(-dmax, dmax)
+            axHistQ.set_xlabel('Bin')
+            axHistQ.set_ylabel('Number in bin')
+            axHistQ.grid()
+
+        plt.tight_layout()
+        plt.show()
         print('  Raw IF data plotted ')
 
     def postProcessing(self):
-        """Process the raw signal and plot the receiver results.
+        """Process the raw Galileo E5b signal and plot the receiver results.
 
-        Satellites are acquired, their code and carrier are tracked, and
-        pseudoranges and receiver position solutions are calculated.
+        First, acquisition identifies the satellites present in the configured
+        data file. The code and carrier of each acquired signal are then
+        tracked and their coherent-integration results are stored.
+        Navigation messages are decoded and pseudoranges and receiver
+        positions are calculated when sufficient navigation data are
+        available. The requested result plots are then produced.
+
+        The processing sequence is:
+
+        1. Acquire the Galileo E5b signals.
+        2. Initialize and track the active receiver channels.
+        3. Decode navigation messages and calculate the navigation solution.
+        4. Plot the tracking and navigation results.
 
         Returns
         -------
@@ -300,11 +335,13 @@ class Settings(object):
         """
         import pickle, datetime
         #--- Acquisition ------------------------------------------------------
+        # Perform acquisition unless it is disabled in the receiver settings;
+        # otherwise restore the previously saved acquisition results.
         if not self.skipAcquisition:
             print('\nAcquisition is going...')
             startTime = datetime.datetime.now()
 
-            # Run acquisition.
+            # Run CPU or GPU acquisition according to gpuACQflag.
             import acquisition
             acqResults = acquisition.AcqEngine(self)
             acqResults.run()
@@ -318,17 +355,20 @@ class Settings(object):
                 pickle.dump(acqResults,fp)
 
         else:
+            # Restore the complete acquisition engine and its result arrays.
             print("Skip acquisition and using pickle data")
             with open(self.acqPklName,"rb") as fp:
                 acqResults = pickle.load(fp)
 
         #--- Tracking ---------------------------------------------------------
+        # Process all active channels unless tracking results are restored.
         if not self.skipTracking:
             # Record and report the tracking start time.
             startTime = datetime.datetime.now()
             print('Tracking started at ',startTime.strftime("%Y-%m-%d %H:%M:%S"))
 
-            # Run channel tracking.
+            # Run channel-serial or channel-parallel tracking according to
+            # trkMode. The tracking results are retained by the engine.
             import tracking
             trackingEngine = tracking.TrackingEngine(self)
             trackingEngine.trackingRun(acqResults)
@@ -342,31 +382,40 @@ class Settings(object):
             with open(self.trkPklName,"wb") as fp:
                 pickle.dump(trackingEngine,fp)
         else:
+            # Restore the complete tracking engine and its result arrays.
             print("Skip tracking and using pickle data")
             with open(self.trkPklName,"rb") as fp:
                 trackingEngine = pickle.load(fp)
             trackResults = trackingEngine.trackResults
 
         #--- Calculate navigation ---------------------------------------------
+        # Decode navigation messages, calculate satellite positions, measure
+        # pseudoranges, and determine the receiver position.
         import postNavigation
         navigationEngine = postNavigation.NavigationEngine(self)
+        # Run navigation unless saved navigation results are requested.
         if not self.skipNavigation:
             navigationEngine.navigationRun(trackResults)
             navSolutions = navigationEngine.navSolutions
             eph = navigationEngine.eph
+            # Save the navigation results and ephemeris data as one tuple.
             with open(self.navPklName,"wb") as fp:
                 pickle.dump((navSolutions,eph),fp)
         else:
+            # Restore the saved navigation results and ephemeris data.
             with open(self.navPklName,"rb") as fp:
                 navSolutions, eph = pickle.load(fp)
+            # Attach the restored results to the post-navigation engine.
             navigationEngine.navSolutions = navSolutions
             navigationEngine.eph = eph
 
         #--- Plot tracking ----------------------------------------------------
+        # Plot the tracking results for all processed channels.
         if self.plotTracking:
             trackingEngine.plotTracking()
 
         #--- Plot navigation --------------------------------------------------
+        # Plot the calculated navigation solution when requested.
         if self.plotNavigation:
             navigationEngine.plotNavigation()
 
