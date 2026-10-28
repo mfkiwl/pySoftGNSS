@@ -345,7 +345,7 @@ def calculatePseudoranges(trackResults, subFrameStart, TOD, currMeasSample,
         settings      - object
                       Receiver settings.
         searchIndex   - numpy.ndarray
-                      Per-channel search positions used by the Python port.
+                      Per-channel tracking-epoch search positions.
     Returns
     -------
         pseudoranges  - numpy.ndarray
@@ -700,8 +700,7 @@ def leastSquarePos(satpos, obs, settings):
     for iter in range(nmbOfIterations):
         for i in range(nmbOfSatellites):
             if iter == 0:
-                # MATLAB initializes the first linearization with a fixed
-                # two-metre tropospheric correction.
+                # Use a fixed two-metre tropospheric correction initially.
                 Rot_X = X[:, i]
                 trop = 2
             else:

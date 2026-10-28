@@ -28,9 +28,9 @@ postNavigation.py - Module Description
 --------------------------------------
 Galileo E6B High Accuracy Service page decoding.
 
-The corresponding MATLAB receiver decodes HAS pages and time-of-hour data,
-but it does not provide the complete broadcast orbit and clock information
-required for a standalone E6B position solution.
+Decode E6B C/NAV pages and assemble HAS messages. Broadcast ephemerides and
+an external GST reference are required to use the corrections for positioning;
+this module does not calculate a standalone E6B position solution.
 
 """
 
@@ -41,10 +41,8 @@ import numpy as np
 class Ephemeris:
     """Decode Galileo E6B pages and assemble receiver-wide HAS messages.
 
-    The implementation follows MATLAB ``NAVdecoding`` and
-    ``ephemeris_E6B``: it synchronizes and channel-decodes E6B pages,
-    returns CRC-valid physical pages, buffers pages received from all
-    satellites, and performs GF(256) Reed-Solomon erasure decoding after the
+    Synchronize and channel-decode E6B pages, retain CRC-valid pages from all
+    satellites, and perform GF(256) Reed-Solomon erasure decoding after the
     required number of distinct Page IDs has been collected.
     """
 
@@ -55,8 +53,7 @@ class Ephemeris:
         -------
             None
         """
-        # Initialize structure fields so unsuccessful or partial decoding
-        # still returns the same HAS data structure for every satellite.
+        # Initialize receiver-wide HAS results and page-assembly state.
         self.PRN = 0
         self.flag = 0
         self.TOH = np.inf
@@ -91,7 +88,7 @@ class Ephemeris:
         """Hard-decision decode the rate-1/2, constraint-length-7 code.
 
         The convolutional generators are 171 and inverted 133 in octal, as
-        specified for Galileo and used by MATLAB ``poly2trellis``.
+        specified for Galileo E6B C/NAV.
 
         Args
         ----
@@ -155,7 +152,7 @@ class Ephemeris:
             bool
                 ``True`` when the page passes the CRC check.
         """
-        # The polynomial matches the MATLAB ``comm.CRCDetector`` definition.
+        # CRC-24Q coefficients, from the x^24 term to the constant term.
         remainder = np.asarray(bits, dtype=np.uint8).copy()
         polynomial = np.array(
             [1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0,
@@ -169,7 +166,7 @@ class Ephemeris:
         """Initialize GF(256) tables and load the official RS matrix.
 
         The field uses primitive polynomial 285. The systematic generator
-        matrix has the MATLAB dimensions N=255 and K=32 and is cached for
+        matrix has 255 rows and 32 columns and is cached for
         subsequent HAS messages.
 
         Returns
@@ -565,9 +562,9 @@ class NavigationEngine:
     def navigationRun(self, trackResults):
         """Decode E6B HAS pages without attempting a standalone PVT fix.
 
-        The MATLAB E6B receiver supplies HAS corrections and Time Of Hour but
-        not the broadcast orbit and clock fields required for an independent
-        position solution.
+        Assemble HAS messages and read their fixed MT1 headers. Correction
+        blocks are retained as raw bits; no orbit, clock or bias corrections
+        are applied to a position solution.
 
         Args
         ----
@@ -585,7 +582,7 @@ class NavigationEngine:
         self.navSolutions = NavSolutions()
         self.eph = Ephemeris()
         pageRecords = []
-        #--- Make a list excluding channels not in tracking lock --------------
+        #--- Select channels that completed tracking -------------------------
         for channel in trackResults:
             if not channel.lockFlag:
                 continue

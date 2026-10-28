@@ -164,15 +164,15 @@ class CorrGPUSerialQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Vector = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=1, flags="C_CONTIGUOUS")
+        float32Vector = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
         self._gpuLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Vector,       # L2CCodeTable
+            float32Vector,    # L2CCodeTable
             ctypes.c_int,     # L2CCodeTable.size // 2
             ctypes.c_double,  # remCarrPhase
             ctypes.c_double,  # carrPhaseStep
@@ -198,7 +198,7 @@ class CorrGPUSerialQPSK:
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             L2CCodeTable - numpy.ndarray
-                        Concatenated guarded int8 CM/CL codes:
+                        Concatenated guarded float32 CM/CL codes:
                         ``[CM(last, period, first),
                         CL(last, period, first)]``.
             remCarrPhase - float
@@ -385,8 +385,8 @@ class CorrGPUParallelQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Table = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=2, flags="C_CONTIGUOUS")
+        float32Table = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
         float64Vector = np.ctypeslib.ndpointer(
@@ -397,7 +397,7 @@ class CorrGPUParallelQPSK:
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Table,        # L2CCodeTable
+            float32Table,     # L2CCodeTable
             ctypes.c_int,     # codeLen
             ctypes.c_int,     # channelCnt
             float64Vector,    # remCarrPhase
@@ -426,7 +426,7 @@ class CorrGPUParallelQPSK:
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             L2CCodeTable - numpy.ndarray
-                        C-contiguous int8 table containing concatenated
+                        C-contiguous float32 table containing concatenated
                         guarded CM/CL code branches for every channel.
             remCarrPhase - numpy.ndarray
                          Residual carrier phases in radians.
@@ -743,8 +743,8 @@ def _generateL2CPrimaryCode(code_init, CodeLength):
         if outputBit:
             reg ^= feedbackMask
 
-    # The cached array is internal and read-only.  Public generators return a
-    # newly allocated interleaved array, preserving their previous semantics.
+    # Cache the primary code read-only; public generators return separate
+    # interleaved arrays.
     primaryCode.setflags(write=False)
     return primaryCode
 

@@ -38,6 +38,7 @@ import os
 os.system('cls' if os.name == 'nt' else 'clear')
 
 if __name__ == "__main__":
+    # Resolve relative IF-data, cache and correlator paths from this directory.
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     import initSettings
     # --- Initialize constants, settings --------------------------------------

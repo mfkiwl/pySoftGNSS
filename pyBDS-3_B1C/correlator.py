@@ -115,9 +115,10 @@ class CorrSIMDSerialQMBOC:
             carrPhaseStep  - float
                            Carrier phase increment in radians per sample.
             remCodePhase   - float
-                           Residual code phase in BOC(6,1) samples.
+                           Code-table phase on the 12-point-per-primary-chip
+                           grid, including the leading-guard offset.
             codePhaseStep  - float
-                           Code phase increment per IF sample.
+                           Code-table phase increment per IF sample.
 
         Returns
         -------
@@ -207,9 +208,10 @@ class CorrGPUSerialQMBOC:
             carrPhaseStep  - float
                            Carrier phase increment in radians per sample.
             remCodePhase   - float
-                           Residual code phase in BOC(6,1) samples.
+                           Code-table phase on the 12-point-per-primary-chip
+                           grid, including the leading-guard offset.
             codePhaseStep  - float
-                           Code phase increment per IF sample.
+                           Code-table phase increment per IF sample.
             PRN            - int
                            Current satellite PRN used for code caching.
 
@@ -320,9 +322,10 @@ class CorrSIMDParallelQMBOC:
             carrPhaseStep  - numpy.ndarray
                            Carrier phase increments in radians per sample.
             remCodePhase   - numpy.ndarray
-                           Initial code phases in BOC(6,1) samples.
+                           Code-table phases on the 12-point-per-primary-chip
+                           grid, including the leading-guard offset.
             codePhaseStep  - numpy.ndarray
-                           Code phase increments per IF sample.
+                           Code-table phase increments per IF sample.
             startIdx       - numpy.ndarray
                            Zero-based logical sample offsets in the shared
                            signal block.
@@ -439,9 +442,10 @@ class CorrGPUParallelQMBOC:
             carrPhaseStep  - numpy.ndarray
                            Carrier phase increments in radians per sample.
             remCodePhase   - numpy.ndarray
-                           Residual code phases in BOC(6,1) samples.
+                           Code-table phases on the 12-point-per-primary-chip
+                           grid, including the leading-guard offset.
             codePhaseStep  - numpy.ndarray
-                           Code phase increments per IF sample.
+                           Code-table phase increments per IF sample.
             startIdx       - numpy.ndarray
                            Zero-based logical sample offsets in ``rawSignal``.
             chSampSize     - numpy.ndarray
@@ -510,9 +514,10 @@ def corrPySerialB1C(settings, rawSignal, B1CCodeTable, remCarrPhase,
         carrPhaseStep  - float
                        Carrier phase increment in radians per sample.
         remCodePhase   - float
-                       Residual code phase in BOC(6,1) samples.
+                       Code-table phase on the 12-point-per-primary-chip
+                       grid, including the leading-guard offset.
         codePhaseStep  - float
-                       Code-phase increment per IF sample.
+                       Code-table phase increment per IF sample.
     Returns
     -------
         correValues    - ndarray
@@ -636,7 +641,8 @@ def corrPyParallelB1C(settings, rawSignal, B1CCodeTable, remCarrPhase,
                        Carrier phase increment for each channel, in radians
                        per sample.
         remCodePhase   - ndarray
-                       Residual code phase for each channel.
+                       Code-table phases on the 12-point-per-primary-chip
+                       grid, including the leading-guard offset.
         codePhaseStep  - ndarray
                        Code-phase increment for each channel.
         startIdx       - ndarray

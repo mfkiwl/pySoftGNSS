@@ -39,9 +39,8 @@ from commUtils import (calculatePseudoranges, cart2geo, cart2utm, findUtmZone,
 class Ephemeris:
     """Decode Galileo I/NAV pages and calculate satellite coordinates.
 
-    This class combines the functions of the MATLAB ``NAVdecoding``,
-    ``ephemeris``, ``check_t`` and ``satpos`` routines. It stores one
-    satellite's broadcast ephemeris, clock parameters and message status.
+    Store one satellite's broadcast ephemeris, clock parameters and message
+    status, and calculate its position and clock correction at transmit time.
     """
 
     def __init__(self):
@@ -49,7 +48,7 @@ class Ephemeris:
 
         Every satellite is initialized with the same fields so that partial
         decoding of the requisite I/NAV words still produces a consistent
-        ephemeris object, as in MATLAB ``eph_structure_init``.
+        ephemeris object.
 
         Returns
         -------
@@ -113,7 +112,7 @@ class Ephemeris:
         """Hard-decision Viterbi decode the Galileo rate-1/2 code.
 
         The convolutional generators are 171 and inverted 133 in octal, as
-        specified by the Galileo ICD and used by the MATLAB receiver.
+        specified by the Galileo ICD.
 
         Args
         ----
@@ -177,7 +176,7 @@ class Ephemeris:
             bool
                 ``True`` when the page passes the CRC check.
         """
-        # The polynomial matches the MATLAB ``comm.CRCDetector`` definition.
+        # CRC-24Q coefficients, from the x^24 term to the constant term.
         remainder = np.asarray(bits, dtype=np.uint8).copy()
         polynomial = np.array(
             [1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0,
@@ -309,8 +308,8 @@ class Ephemeris:
     def decodeINav(self, navBits):
         """Decode the first 15 complete I/NAV pages in a bit stream.
 
-        Fifteen full page pairs form the subframe used by the MATLAB
-        receiver to obtain the six requisite nominal I/NAV word types.
+        Search fifteen complete page pairs for the six nominal I/NAV word
+        types needed by this decoder.
 
         Args
         ----
@@ -616,8 +615,7 @@ class NavigationEngine:
             settings.numberOfChannels, dtype=np.int64)
 
         #%% Check whether enough data are available for a navigation solution
-        # A complete Galileo E1 I/NAV ephemeris set requires at least the
-        # record length used by the corresponding MATLAB receiver.
+        # Require 33 s of tracking before searching for a complete I/NAV set.
         MIN_RECORD_MS = 33000
         if settings.msToProcess < MIN_RECORD_MS:
             print("Record is too short. Exiting!")
@@ -633,8 +631,7 @@ class NavigationEngine:
         # TOW of the first valid message [s]; infinity indicates no detection.
         TOW = np.full(settings.numberOfChannels, np.inf)
 
-        #--- Make a list excluding channels not in tracking lock ----------
-        # Make a list containing only channels that remain in tracking lock.
+        #--- Select channels that completed tracking ---------------------
         activeChnList = [
             channelNr for channelNr, channel in enumerate(trackResults)
             if channel.lockFlag ]
@@ -708,7 +705,7 @@ class NavigationEngine:
         # advanced by the navigation-solution interval.
         localTime = None
 
-        # Preallocate results in MATLAB's channel-by-epoch orientation.
+        # Preallocate channel-by-epoch observation arrays.
         self.navSolutions = NavSolutions(settings.numberOfChannels, measNrSum)
         navSolutions = self.navSolutions
 
@@ -783,7 +780,7 @@ class NavigationEngine:
                 navSolutions.X[currMeasNr] = xyzdt[0]
                 navSolutions.Y[currMeasNr] = xyzdt[1]
                 navSolutions.Z[currMeasNr] = xyzdt[2]
-                # As in MATLAB, store zero clock bias for the first solution;
+                # Store zero clock bias for the first solution;
                 # subsequent values are the estimated range-form bias [m].
                 navSolutions.dt[currMeasNr] = (
                     0 if currMeasNr == 0 else xyzdt[3])
@@ -835,7 +832,7 @@ class NavigationEngine:
                 # convenient for plotting; later processing must exclude NaN
                 # values when computing statistics.
 
-                # Known MATLAB limitation: positions/elevations of masked
+                # Positions and elevations of masked
                 # satellites are not updated, so a rising satellite cannot
                 # re-enter after it has been excluded by the elevation mask.
 
@@ -882,8 +879,6 @@ class NavigationEngine:
             refU = settings.truePositionU
             refPointText = "Reference position"
 
-        # Figure 300 follows MATLAB and avoids overwriting auto-numbered user
-        # figures when navigation plots are closed and reopened.
         #=== Select or create and clear the figure ============================
         figure = plt.figure(300, figsize=(12, 8), clear=True)
         figure.canvas.manager.set_window_title("Navigation solutions")
@@ -923,8 +918,7 @@ class NavigationEngine:
         positionAxes.legend()
 
         #--- Satellite sky plot -----------------------------------------------
-        # Satellite sky plot. The utility follows MATLAB's
-        # satellite-by-epoch layout and spherical elevation mapping.
+        # Plot satellite-by-epoch azimuth and elevation observations.
         skyPlot(skyAxes, navSolutions.az, navSolutions.el,
                 navSolutions.PRN[:, 0])
         skyAxes.set_title(

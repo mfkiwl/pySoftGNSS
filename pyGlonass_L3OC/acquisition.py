@@ -70,17 +70,17 @@ class AcqEngine():
         self.codeFreq = np.zeros(svNum)
         # Acquisition decisions, shape (svNum,); False means not acquired.
         self.acqFlag = np.full(svNum, False)
-        # Receiver settings retained by reference for all acquisition methods.
+        # Receiver settings.
         self._settings = settings
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return the receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -222,8 +222,8 @@ class AcqEngine():
                     freqMax = coarseFreqBin
 
             #--- Find a one-chip-wide exclusion range around the peak -----
-            # Match acquisitionCPU.m: use the results left by the final
-            # frequency bin and exclude one chip around the global code phase.
+            # Use the final frequency-bin result and exclude one chip around
+            # the global code phase.
             excludeIndex1 = codePhaseMax - samplesPerChip
             excludeIndex2 = codePhaseMax + samplesPerChip
 
@@ -332,7 +332,7 @@ class AcqEngine():
         from cupyx.scipy import fft as fftBackend
 
         settings = self._settings
-        # Match acquisitionGPU.m: bulk GPU processing uses single precision.
+        # Single-precision arrays for GPU correlation.
         realDataType = xp.float32
         complexDataType = xp.complex64
 
@@ -382,9 +382,8 @@ class AcqEngine():
         finePhasePoints = phasePoints[:samplesPerCode]
 
         #--- Variables for fine acquisition -------------------------------
-        # Map all 200 ms absolute sample positions to L3OC-code chips once. The
-        # mapping follows acquisitionGPU.m's double-precision host calculation:
-        # direct float32 arithmetic changes chip indices near integer boundaries.
+        # Compute the 200 ms code indices in float64 to limit rounding near
+        # chip boundaries.
         codeValueIndex = (np.arange(200 * samplesPerCode, dtype=np.float64)* ts
                           * settings.codeFreqBasis).astype(np.int32)
         codeValueIndex %= settings.codeLength
@@ -533,8 +532,7 @@ class AcqEngine():
                                       * localCarr1ms)
 
                     # Compute this millisecond's carrier start phase on the host
-                    # in float64 and reduce it modulo 2*pi. Double precision
-                    # avoids the fine-bin shift observed with a float32 start.
+                    # in float64 and reduce it modulo 2*pi.
                     initialPhase = np.fmod(2 * np.pi * freqMax *
                                     codePeriodIndex * codePeriod, 2 * np.pi)
 

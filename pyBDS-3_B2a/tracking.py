@@ -129,12 +129,12 @@ class TrackingEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -231,8 +231,8 @@ class TrackingEngine():
                 # The SIMD DLL consumes a guarded int32 code table.
                 B2aCodeTable = np.asarray(B2aCodeTable, dtype=np.int32)
             elif settings.correlatorType == 2:
-                # The CUDA DLL consumes a guarded int8 code table.
-                B2aCodeTable = np.asarray(B2aCodeTable, dtype=np.int8)
+                # The CUDA DLL consumes a guarded float32 code table.
+                B2aCodeTable = np.asarray(B2aCodeTable, dtype=np.float32)
 
             # --- Perform various initializations -----------------------------
             # Define initial code frequency basis of NCO
@@ -459,8 +459,7 @@ class TrackingEngine():
 
         settings = self.settings
         #--- Copy result variables for all channels -----------------------
-        # Channel objects already contain the preallocated result arrays that
-        # MATLAB constructs at the beginning of trkChannelsParallel.m.
+        # Channel objects already contain the preallocated result arrays.
         trkResults = self.trackResults
         # Number of active channels to be tracked.
         channelCnt = int(min(sum(acqResults.acqFlag), settings.numberOfChannels))
@@ -517,8 +516,8 @@ class TrackingEngine():
             # SIMD shares an int32 guarded-code table across all channels.
             B2aCodeTable = np.asarray(B2aCodeTable, dtype=np.int32)
         elif settings.correlatorType == 2:
-            # GPU shares an int8 guarded-code table across all channels.
-            B2aCodeTable = np.asarray(B2aCodeTable, dtype=np.int8)
+            # GPU shares a float32 guarded-code table across all channels.
+            B2aCodeTable = np.asarray(B2aCodeTable, dtype=np.float32)
 
         #%% Initialize tracking variables =================================
         # Number of coherent tracking epochs processed for all active channels.
@@ -534,7 +533,7 @@ class TrackingEngine():
         tau1carr, tau2carr = calcLoopCoef(
             settings.pllNoiseBandwidth, settings.pllDampingRatio, 1.0)
 
-        # Update the GUI less often for the faster compiled correlators.
+        # Update the GUI less often for the compiled correlators.
         if settings.correlatorType == 0:
             barUprate = 50
         else:

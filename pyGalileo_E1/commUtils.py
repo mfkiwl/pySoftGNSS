@@ -167,13 +167,15 @@ def calcCNoPld(chResults, settings, loopCnt):
         chResults    - Channel
                       Correlation values accumulated for one channel.
         settings     - object
-                      Receiver settings.
+                      Receiver settings, including the pilot tracking flag.
         loopCnt      - int
                       Zero-based iteration index for C/N0 calculation.
     Returns
     -------
         CNo          - numpy.ndarray
                       Data, pilot, and whole E1-signal C/N0 in dB-Hz.
+                      With pilot tracking off, the pilot entry is zero and
+                      whole-signal C/N0 equals data-channel C/N0.
         pllDetector  - numpy.ndarray
                       PLL lock-detector outputs for data and pilot channels.
     """
@@ -195,15 +197,17 @@ def calcCNoPld(chResults, settings, loopCnt):
     pllDetector[0] = NBD/NBP
 
     #--- C/N0 and PLL detector estimation for the pilot channel ----------
-    Q_P = chResults.Pilot_I_P[firstIndex:lastIndex]
-    I_P = chResults.Pilot_Q_P[firstIndex:lastIndex]
-    pilotCNo = 10**(CNoVSM(I_P, Q_P, T)/10)
-    CNo[1] = 10*np.log10(pilotCNo)
-    NBP = ((np.sum(I_P[I_P > 0])-np.sum(I_P[I_P < 0]))**2
-           + np.sum(Q_P)**2)
-    NBD = ((np.sum(I_P[I_P > 0])-np.sum(I_P[I_P < 0]))**2
-           - np.sum(Q_P)**2)
-    pllDetector[1] = NBD/NBP
+    pilotCNo = 0
+    if settings.pilotTRKflag == 1:
+        Q_P = chResults.Pilot_I_P[firstIndex:lastIndex]
+        I_P = chResults.Pilot_Q_P[firstIndex:lastIndex]
+        pilotCNo = 10**(CNoVSM(I_P, Q_P, T)/10)
+        CNo[1] = 10*np.log10(pilotCNo)
+        NBP = ((np.sum(I_P[I_P > 0])-np.sum(I_P[I_P < 0]))**2
+               + np.sum(Q_P)**2)
+        NBD = ((np.sum(I_P[I_P > 0])-np.sum(I_P[I_P < 0]))**2
+               - np.sum(Q_P)**2)
+        pllDetector[1] = NBD/NBP
 
     # C/N0 estimation for the complete Galileo E1 signal.
     CNo[2] = 10*np.log10(dataCNo+pilotCNo)
@@ -332,13 +336,13 @@ def calculatePseudoranges(trackResults, subFrameStart, TOW, currMeasSample,
         currMeasSample - int
                        Current measurement sample location.
         localTime     - float or None
-                      Local GPST at the measurement time.
+                      Receiver local time at the measurement epoch [s].
         channelList   - sequence
                       Channels to process.
         settings      - object
                       Receiver settings.
         searchIndex   - numpy.ndarray
-                      Per-channel search positions used by the Python port.
+                      Saved per-channel indices into the tracking epochs.
     Returns
     -------
         pseudoranges  - numpy.ndarray
@@ -346,7 +350,7 @@ def calculatePseudoranges(trackResults, subFrameStart, TOW, currMeasSample,
         transmitTime  - numpy.ndarray
                       Transmitting times at the measurement time.
         localTime     - float
-                      Local GPST at the measurement time.
+                      Receiver local time at the measurement epoch [s].
         carrFreqPerSat - numpy.ndarray
                        Carrier frequencies at the measurement time.
     """
@@ -693,7 +697,7 @@ def leastSquarePos(satpos, obs, settings):
     for iter in range(nmbOfIterations):
         for i in range(nmbOfSatellites):
             if iter == 0:
-                # MATLAB initializes the first linearization with a fixed
+                # Initialize the first linearization with a fixed
                 # two-metre tropospheric correction.
                 Rot_X = X[:, i]
                 trop = 2

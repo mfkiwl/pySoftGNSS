@@ -74,12 +74,12 @@ class AcqEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -156,7 +156,7 @@ class AcqEngine():
         finePhasePoints = (
             np.arange(200 * samplesPerCode, dtype=np.float64) * 2 * np.pi * ts)
 
-        # Reuse the large 200 ms buffers for every PRN.
+        # Reuse the zero-padded 2 ms code replicas for every PRN.
         localL5I = np.zeros(samplesPerCode * 2, dtype=np.float64)
         localL5Q = np.zeros(samplesPerCode * 2, dtype=np.float64)
 
@@ -175,8 +175,8 @@ class AcqEngine():
             # Conjugated data-code spectrum for frequency-domain correlation.
             L5IFreqDom = np.conjugate(fft.fft(localL5I))
 
-            # Generate the pilot replica so that its power can be combined
-            # with the L5 data-channel correlation.
+            # Generate the pilot replica for magnitude combining with the
+            # L5 data-channel correlation.
             L5QTable = correlator.codeSampling(
                 settings, PRN, samplesPerCode, "pilot")
             localL5Q[:samplesPerCode] = L5QTable[:samplesPerCode]
@@ -237,7 +237,7 @@ class AcqEngine():
             secondPeak = float(np.max(results[codePhaseRange]))
             # Save code-phase acquisition result.
             self.codePhase[PRN - 1] = codePhaseMax
-            # Store the GLRT statistic.
+            # Store the primary-to-secondary correlation-peak ratio.
             self.peakMetric[PRN - 1] = peakMax / secondPeak
             # Store the searched PRN.
             self.PRN[PRN - 1] = PRN
@@ -247,7 +247,7 @@ class AcqEngine():
             if codePhaseMax + 200 * samplesPerCode > longSignal.size:
                 codePhaseMax -= samplesPerCode
 
-            # A GLRT statistic above the threshold indicates that the L5
+            # A peak ratio above the threshold indicates that the L5
             # signal has been found.
             if self.peakMetric[PRN - 1] > settings.acqThreshold:
                 #%% Fine resolution frequency search ======================
@@ -384,7 +384,7 @@ class AcqEngine():
         finePhasePoints = xp.arange(samplesPer1ms, dtype=realDataType)
         finePhasePoints *= realDataType(2 * np.pi * ts)
 
-        # Reuse the large 200 ms GPU buffers for every PRN.
+        # Reuse the zero-padded 2 ms GPU code replicas for every PRN.
         localL5I = xp.zeros(samplesPerCode * 2, dtype=realDataType)
         localL5Q = xp.zeros(samplesPerCode * 2, dtype=realDataType)
 
@@ -403,8 +403,8 @@ class AcqEngine():
             # Conjugated data-code spectrum for frequency-domain correlation.
             L5IFreqDom = xp.conjugate(fftBackend.fft(localL5I))
 
-            # Generate the pilot replica so that its power can be combined
-            # with the L5 data-channel correlation.
+            # Generate the pilot replica for magnitude combining with the
+            # L5 data-channel correlation.
             L5QTable = correlator.codeSampling(
                 settings, PRN, samplesPerCode, "pilot")
             localL5Q[:samplesPerCode] = xp.asarray(
@@ -468,7 +468,7 @@ class AcqEngine():
             secondPeak = xp.max(results[codePhaseRange]).item()
             # Save code-phase acquisition result.
             self.codePhase[PRN - 1] = codePhaseMax
-            # Store the GLRT statistic.
+            # Store the primary-to-secondary correlation-peak ratio.
             self.peakMetric[PRN - 1] = peakMax / secondPeak
             # Store the searched PRN.
             self.PRN[PRN - 1] = PRN
@@ -478,7 +478,7 @@ class AcqEngine():
             if codePhaseMax + 200 * samplesPerCode > longSignal.size:
                 codePhaseMax -= samplesPerCode
 
-            # A GLRT statistic above the threshold indicates that the L5
+            # A peak ratio above the threshold indicates that the L5
             # signal has been found.
             if self.peakMetric[PRN - 1] > settings.acqThreshold:
                 #%% Fine resolution frequency search ======================
@@ -593,9 +593,7 @@ class AcqEngine():
     def preRun(self):
         """Prepare tracking-channel priority from the acquisition results.
 
-        The acquired signals are sorted according to signal strength. This
-        function can be modified to use another satellite-selection algorithm
-        or to introduce acquired-signal property offsets for testing.
+        The results are sorted by decreasing correlation-peak ratio.
 
         Returns
         -------
@@ -603,7 +601,7 @@ class AcqEngine():
                 Acquisition-result arrays are reordered in place.
         """
         #--- Sort peaks and retain their index information ----------------
-        # Sort peaks to find the strongest signals and retain their indices.
+        # Sort peak ratios in descending order and retain their indices.
         PRNindexes = self.peakMetric.argsort()[::-1]
         self.peakMetric = self.peakMetric.take(PRNindexes)
         self.carrFreq = self.carrFreq.take(PRNindexes)

@@ -163,15 +163,15 @@ class CorrGPUSerialQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Vector = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=1, flags="C_CONTIGUOUS")
+        float32Vector = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
         self._gpuLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Vector,       # L1OCCodeTable
+            float32Vector,    # L1OCCodeTable
             ctypes.c_int,     # L1OCCodeTable.size // 2
             ctypes.c_double,  # remCarrPhase
             ctypes.c_double,  # carrPhaseStep
@@ -197,7 +197,7 @@ class CorrGPUSerialQPSK:
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             L1OCCodeTable - numpy.ndarray
-                        Concatenated guarded int8 L1OCd/L1OCp codes:
+                        Concatenated guarded float32 L1OCd/L1OCp codes:
                         ``[L1OCd(last, period, first),
                         L1OCp(last, period, first)]``.
             remCarrPhase - float
@@ -384,8 +384,8 @@ class CorrGPUParallelQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Table = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=2, flags="C_CONTIGUOUS")
+        float32Table = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
         float64Vector = np.ctypeslib.ndpointer(
@@ -396,7 +396,7 @@ class CorrGPUParallelQPSK:
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Table,        # L1OCCodeTable
+            float32Table,     # L1OCCodeTable
             ctypes.c_int,     # codeLen
             ctypes.c_int,     # channelCnt
             float64Vector,    # remCarrPhase
@@ -425,7 +425,7 @@ class CorrGPUParallelQPSK:
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             L1OCCodeTable - numpy.ndarray
-                        C-contiguous int8 table containing concatenated
+                        C-contiguous float32 table containing concatenated
                         guarded L1OCd/L1OCp code branches for every channel.
             remCarrPhase - numpy.ndarray
                          Residual carrier phases in radians.
@@ -588,8 +588,7 @@ def corrPyParallelQPSK(settings, rawSignal, L1OCCodeTable, remCarrPhase,
                        startIdx, chSampSize, isDataRead):
     """Correlate all active L1OC channels against one shared IF block.
 
-    This function has the same calling interface as the SIMD and GPU
-    correlators. Each output column is ordered as
+    Each output column is ordered as
     ``[I_E, Q_E, I_P, Q_P, I_L, Q_L, pilot_I_E, pilot_Q_E,
     pilot_I_P, pilot_Q_P, pilot_I_L, pilot_Q_L]``.
 
@@ -618,7 +617,7 @@ def corrPyParallelQPSK(settings, rawSignal, L1OCCodeTable, remCarrPhase,
         chSampSize   - ndarray
                       Number of samples in each channel's code period.
         isDataRead   - int
-                      Shared-data refresh flag retained for interface parity.
+                      Shared-buffer refresh flag (unused in this correlator).
     Returns
     -------
         correValues   - ndarray
@@ -729,8 +728,7 @@ def generateL1OCdCode(PRN, settings):
                     GLONASS L1OC SV ID number, 0...63. PRN 0 is reserved
                     in the ICD, but is kept for test-vector checking.
         settings    - object
-                    Receiver settings. It is kept for the same calling style
-                    as the L1OC code generator; no field is required here.
+                    Receiver settings (unused).
 
     Returns
     -------
@@ -759,8 +757,7 @@ def generateL1OCdCode(PRN, settings):
     #--- Generate raw binary PRN chips -----------------------------------
     rawCode = np.empty(CodeLength, dtype=np.int8)
 
-    # Python uses zero-based array indices; the register stages below are
-    # MATLAB stages 10, 7, 3 and 9 shifted by one.
+    # Register stages are addressed with zero-based indices.
     for index in range(CodeLength):
         rawCode[index] = reg1[9] ^ reg2[9]
         fb1 = reg1[6] ^ reg1[9]
@@ -787,7 +784,7 @@ def generateL1OCpBOCCode(PRN, settings):
         PRN         - int
                     GLONASS L1OC SV ID number, 0...63.
         settings    - object
-                    Receiver settings retained for the common interface.
+                    Receiver settings (unused).
 
     Returns
     -------
@@ -810,8 +807,7 @@ def generateL1OCpBOCCode(PRN, settings):
     #--- Generate raw binary PRN chips -----------------------------------
     rawCode = np.empty(CodeLength, dtype=np.int8)
 
-    # Python uses zero-based array indices; the register stages below are
-    # the MATLAB stages shifted by one.
+    # Register stages are addressed with zero-based indices.
     for index in range(CodeLength):
         rawCode[index] = reg1[11] ^ reg2[5]
         fb1 = reg1[5] ^ reg1[7] ^ reg1[10] ^ reg1[11]
@@ -865,9 +861,10 @@ def codeSampling(settings, PRN, sampleLen, component):
 
     # MATLAB makeL1OCdTable uses ceil on one-based code indices and forces
     # complete sampled codes to start and end on their boundary chips.
+    ts = 1 / settings.samplingFreq
+    tc = 1 / codeFreqBasis
     codeValueIndex = np.ceil(
-        np.arange(sampleLen, dtype=np.float64) *
-        codeFreqBasis/settings.samplingFreq).astype(np.int64)-1
+        (ts * np.arange(sampleLen, dtype=np.float64)) / tc).astype(np.int64)-1
     codeValueIndex %= codeLength
     codeValueIndex[0] = 0
     samplesPerComponent = round(

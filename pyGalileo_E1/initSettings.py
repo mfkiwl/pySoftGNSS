@@ -52,9 +52,8 @@ class Settings(object):
         self.numberOfChannels    = 12
         # Move the starting point of processing. Can be used to start the
         # signal processing at any point in the data record (e.g. for long
-        # records). fseek function is used to move the file read point,
-        # therefore the offset is expressed in logical time samples, not
-        # directly in bytes. I/Q files contain two scalar values per sample.
+        # records). The file offset is expressed in logical samples, not
+        # bytes. I/Q files contain two scalar values per sample.
         self.skipNumberOfSamples        = 0
 
         #%% Raw signal file name and related parameters =======================
@@ -103,22 +102,26 @@ class Settings(object):
         # Select channel scheduling for tracking.
         self.trkMode            = 1       # 0 - Channel-serial tracking;
                                           # 1 - Channel-parallel tracking;
-        # E1 CBOC uses non-binary weights; the current native QPSK DLLs only
-        # accept binary code tables, so use the Python reference correlator.
+        # Serial and parallel GPU tracking preserve the CBOC weights in float32.
+        # SIMD correlators still use integer code tables.
         # When correlatorType is 1, correlator.py automatically loads the x86 SIMD
         # or ARM NEON correlator according to the platform architecture.
         self.correlatorType     = 2       # 0 - Python correlator;
                                           # 1 - SIMD correlator;
                                           # 2 - GPU correlator;
+        # Enable/disable full-band tracking using the BOC(6,1) component.
+        self.fullBandEn         = 1       # 0 - Narrowband; 1 - Full band
         # Number of right-shift bits for IF data to prevent SIMD-correlator
         # overflow when ADC valid bits occupy the high bits.
         if self.correlatorType == 1:
-            self.rShiftBits     = 5       # 0 - No shift;
+            self.rShiftBits     = 4       # 0 - No shift;
         # Pickle file used when tracking is skipped.
         self.trkPklName             = "./result_Cache/trackResults.pkl"
         # Code tracking loop parameters
         self.dllDampingRatio        = 0.7
         self.dllNoiseBandwidth      = 1.0         # [Hz]
+        # Half of the E-L spacing should be kept below approximately 0.0765
+        # chip for full-band tracking mode (see Betz, 2016).
         self.dllCorrelatorSpacing   = 0.07        # [primary-code chips]
         # Carrier tracking loop parameters
         self.pllDampingRatio        = 0.7
@@ -127,6 +130,7 @@ class Settings(object):
         self.intTime                = 0.004       # [s]
         # Enable the E1C pilot branch in acquisition and tracking.
         self.pilotACQflag           = True
+        # 0 - Data-only tracking; 1 - Combine data and pilot in the loops.
         self.pilotTRKflag           = True
 
         #%% Navigation solution settings ======================================
@@ -370,7 +374,7 @@ class Settings(object):
             print('Tracking started at ',startTime.strftime("%Y-%m-%d %H:%M:%S"))
 
             # Run channel-serial or channel-parallel tracking according to
-            # trkMode. The tracking results are retained by the engine.
+            # trkMode. Results are stored in trackingEngine.trackResults.
             import tracking
             trackingEngine = tracking.TrackingEngine(self)
             trackingEngine.trackingRun(acqResults)

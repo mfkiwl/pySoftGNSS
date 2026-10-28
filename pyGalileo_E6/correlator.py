@@ -165,15 +165,15 @@ class CorrGPUSerialQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Vector = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=1, flags="C_CONTIGUOUS")
+        float32Vector = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
         self._gpuLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Vector,       # E6CodeTable
+            float32Vector,    # E6CodeTable
             ctypes.c_int,     # E6CodeTable.size // 2
             ctypes.c_double,  # remCarrPhase
             ctypes.c_double,  # carrPhaseStep
@@ -199,7 +199,7 @@ class CorrGPUSerialQPSK:
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             E6CodeTable - numpy.ndarray
-                        Concatenated guarded int8 E6B/E6C codes:
+                        Concatenated guarded float32 E6B/E6C codes:
                         ``[E6B(last, period, first),
                         E6C(last, period, first)]``.
             remCarrPhase - float
@@ -386,8 +386,8 @@ class CorrGPUParallelQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Table = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=2, flags="C_CONTIGUOUS")
+        float32Table = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
         float64Vector = np.ctypeslib.ndpointer(
@@ -398,7 +398,7 @@ class CorrGPUParallelQPSK:
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Table,        # E6CodeTable
+            float32Table,     # E6CodeTable
             ctypes.c_int,     # codeLen
             ctypes.c_int,     # channelCnt
             float64Vector,    # remCarrPhase
@@ -427,7 +427,7 @@ class CorrGPUParallelQPSK:
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             E6CodeTable - numpy.ndarray
-                        C-contiguous int8 table containing concatenated
+                        C-contiguous float32 table containing concatenated
                         guarded E6B/E6C code branches for every channel.
             remCarrPhase - numpy.ndarray
                          Residual carrier phases in radians.
@@ -533,8 +533,7 @@ def corrPySerialQPSK(settings, rawSignal, E6CodeTable, remCarrPhase,
     # Time index for each sampling point.
     sampleInd = np.arange(blksize)
     codeInd = sampleInd * codePhaseStep
-    # Python uses zero-based indices, so MATLAB's trailing +1 local-code
-    # offset is not required below.
+    # Local-code table indices are zero-based.
 
     # Define index into early code vectors.
     tcode = remCodePhase - earlyLateSpc + codeInd
@@ -590,8 +589,7 @@ def corrPyParallelQPSK(settings, rawSignal, E6CodeTable, remCarrPhase,
                        startIdx, chSampSize, isDataRead):
     """Correlate all active E6 channels against one shared IF block.
 
-    This function has the same calling interface as the SIMD and GPU
-    correlators. Each output column is ordered as
+    Each output column is ordered as
     ``[I_E, Q_E, I_P, Q_P, I_L, Q_L, pilot_I_E, pilot_Q_E,
     pilot_I_P, pilot_Q_P, pilot_I_L, pilot_Q_L]``.
 
@@ -620,7 +618,7 @@ def corrPyParallelQPSK(settings, rawSignal, E6CodeTable, remCarrPhase,
         chSampSize   - ndarray
                       Number of samples in each channel's code period.
         isDataRead   - int
-                      Shared-data refresh flag retained for interface parity.
+                      Unused here; samples are read directly from rawSignal.
     Returns
     -------
         correValues   - ndarray
@@ -678,8 +676,7 @@ def corrPyParallelQPSK(settings, rawSignal, E6CodeTable, remCarrPhase,
         lateCodeD = E6CodeD[tcode]
         lateCodeP = E6CodeP[tcode]
 
-        # Define index into Prompt code vectors. Python uses zero-based
-        # indices, so MATLAB's trailing +1 index offset is not required.
+        # Define zero-based indices into the Prompt code vectors.
         tcode = np.ceil(codePhase).astype(np.int32)
         promptCodeD = E6CodeD[tcode]
         promptCodeP = E6CodeP[tcode]
@@ -727,7 +724,7 @@ def generateDataCode(PRN, flag=1):
         PRN         - int
                      PRN number of the sequence.
         flag        - int
-                     Kept for the common generator interface; E6B is primary.
+                     Unused; the returned E6B code is always the primary code.
 
     Returns
     -------
@@ -749,7 +746,7 @@ def generateDataCode(PRN, flag=1):
         generateDataCode.E6B_code = tuple(E6B_code)
 
     # Convert the requested code from hexadecimal to bipolar chips.
-    # Python uses zero-based rows; MATLAB selects the PRN-th code row.
+    # Select the row for this PRN.
     code = generateDataCode.E6B_code[int(PRN)-1]
     m = np.fromiter(
         ((int(value, 16) >> shift) & 1
@@ -795,7 +792,7 @@ def generatePilotCode(PRN, flag=1):
         generatePilotCode.E6C_code = tuple(E6C_code)
 
     # Convert the requested code from hexadecimal to bipolar chips.
-    # Python uses zero-based rows; MATLAB selects the PRN-th code row.
+    # Select the row for this PRN.
     code = generatePilotCode.E6C_code[int(PRN)-1]
     m = np.fromiter(
         ((int(value, 16) >> shift) & 1
@@ -837,9 +834,10 @@ def codeSampling(settings, PRN, sampleLen, component):
 
     #=== Digitizing =========================================================
     #--- Make the index array used to read E6 code values -------------------
+    ts = 1 / settings.samplingFreq
+    tc = 1 / settings.codeFreqBasis
     codeValueIndex = np.ceil(
-        np.arange(1, sampleLen + 1) * code.size /
-        settings.samplesPerCode).astype(np.int32) - 1
+        (ts * np.arange(1, sampleLen + 1)) / tc).astype(np.int32) - 1
 
     #--- Correct the last index due to rounding -----------------------------
     codeValueIndex[-1] = code.size - 1

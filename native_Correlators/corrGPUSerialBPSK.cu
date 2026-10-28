@@ -1,13 +1,12 @@
 ﻿/*================================================================================
  * Filename: corrGPUSerialBPSK.cu
  * Description: GPU-assisted single-channel tracking correlator exposed
- *              through a small C ABI for Python ctypes.
+ *              through a C interface for Python ctypes.
  *
  * Authors: Yafeng Li (School of Automation, Beijing Information Science and Technology University)
  * Time: Apr, 21, 2026
  *
- * The core processing stages are intentionally kept aligned with the
- * GPU channel-parallel correlator:
+ * Processing stages:
  *   1) mixCarrReal() / mixCarrComplex()
  *   2) correlator()
  *
@@ -76,10 +75,10 @@ struct GPU_Complex
     float i;
     __host__ __device__ GPU_Complex() : r(0.0f), i(0.0f) {}
 
-    // Constructor for a complex number with real amd imag parts of float
+    // Constructor for a complex number with float real and imaginary parts
     __host__ __device__ GPU_Complex(float realPart, float imagPart) : r(realPart), i(imagPart) {}
 
-    // Magnitude of a complex number
+    // Squared magnitude of a complex number
     __host__ __device__ float magnitude2() { return r * r + i * i; }
 
     __device__ GPU_Complex operator*(const GPU_Complex& a) {
@@ -156,7 +155,7 @@ static int initialized = 0;
  *          rawSignalLenIn I   number of int16 elements in rawSignal
  *          earlyLateSpc   I   half early-late spacing (chips)
  *          rawSignal      I   int16 IF samples
- *          caCode         I   int8 guarded code [last, one period, first]
+ *          caCode         I   int8 local-code table with leading and trailing guards
  *          codeLen        I   number of elements in caCode
  *          remCarrPhase   I   residual carrier phase (rad)
  *          carrPhaseStep  I   carrier phase increment (rad/sample)
@@ -182,8 +181,8 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenIn, double earlyLate
 
     if (!initialized)
     {
-        /* Validate the interface before the first allocation. Later calls stay
-           on the same fast path and reuse the initialized configuration. */
+        /* Validate the interface before the first allocation. Later calls
+           reuse the initialized configuration. */
         // gateway check
         if (!checkInputs(fileType, rawSignalLenIn, rawSignal, caCode, codeLen)) {
             return NULL;
@@ -304,7 +303,7 @@ DLL_EXPORT void corrEngineFree(void)
  */
 __global__ void mixCarrReal(const short* d_pRawSignal, GPU_Complex* d_BasebandSignal, int blksize, float remCarrPhase, float carrPhaseStep)
 {
-    // CUDA version of floating point NCO and vector dot product integrated
+    // Generate the carrier replica and wipe off the carrier.
 
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < blksize; index += blockDim.x * gridDim.x) {
         float sin, cos;
@@ -322,7 +321,7 @@ __global__ void mixCarrReal(const short* d_pRawSignal, GPU_Complex* d_BasebandSi
 __global__ void mixCarrComplex(const short* d_pRawSignal, GPU_Complex* d_BasebandSignal,
     int blksize, float remCarrPhase, float carrPhaseStep)
 {
-    // CUDA version of floating point NCO and vector dot product integrated
+    // Generate the carrier replica and wipe off the carrier.
     const short2* d_pRawSignalIQ = reinterpret_cast<const short2*>(d_pRawSignal);
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < blksize; index += blockDim.x * gridDim.x) {
         float sin, cos;

@@ -43,8 +43,7 @@ from commUtils import (
 class Ephemeris:
     """Keep a common ephemeris structure for one satellite.
 
-    This ensures that the ephemeris of each satellite has a similar structure
-    when only one or none of the three requisite messages is decoded.
+    All fields are initialized before navigation messages are decoded.
     """
 
     def __init__(self):
@@ -192,8 +191,8 @@ class Ephemeris:
 
     @staticmethod
     def checkPhase(word, D30Star):
-        """Check the parity of the supplied 30-bit word.
-        The last parity bit of the previous word is used for the calculation.
+        """Correct the data-bit polarity of a 30-bit navigation word.
+        The preceding word's D30Star bit determines whether to invert the data.
         A note on the procedure is supplied by the GPS Standard Positioning
         Service Signal Specification.
 
@@ -402,9 +401,7 @@ class Ephemeris:
                         Time of week of the first message, in seconds. It is
                         set to ``numpy.inf`` if no valid preamble is found.
         """
-        # Initialize a common ephemeris structure. This ensures that the
-        # ephemeris of every SV has the same structure when only one, or none,
-        # of the three requisite navigation messages is decoded.
+        # Initialize all ephemeris fields before decoding.
         eph = cls()
         # Starting position and TOW of the first navigation message.
         subFrameStart = np.inf
@@ -449,9 +446,8 @@ class Ephemeris:
                 # === Re-read bit values for preamble verification ============
                 # Re-read 62 bits: two bits from the preceding word are
                 # required for parity, followed by the TLM and HOW words.
-                # Combining the 20 prompt values per bit improves decisions
-                # for noisy signals. The candidate index points to the start
-                # of the TLM word.
+                # Combine the 20 prompt values per bit. The candidate index
+                # points to the start of the TLM word.
                 navWordSamples = I_P_InputBits[candidate-40:candidate+20*60]
                 
                 #--- Combine the 20 values of each bit ------------------------
@@ -480,8 +476,7 @@ class Ephemeris:
         # subframes together with D30* from the preceding word.
         navBitsSamples = I_P_InputBits[subFrameStart-20:subFrameStart+1500*20]
         # --- Group and sum the 20 values of every bit ------------------------
-        # Group the 20 tracking values belonging to every bit and sum them to
-        # obtain the best bit estimate.
+        # Group and sum the 20 tracking values belonging to every bit.
         navBits = np.asarray(navBitsSamples).reshape(1501, 20).sum(1)
 
         #--- Threshold and convert to binary characters -----------------------
@@ -742,8 +737,8 @@ class NavigationEngine:
         # TOW of the first valid message [s]; infinity indicates no detection.
         TOW = np.full(settings.numberOfChannels, np.inf)
 
-        #--- Make a list excluding channels not in tracking lock ----------
-        # Make a list containing only channels that remain in tracking lock.
+        #--- Make a list of completed tracking channels --------------------
+        # lockFlag marks channels whose tracking loop completed.
         activeChnList = [
             channelNr for channelNr, channel in enumerate(trackResults)
             if channel.lockFlag ]
@@ -886,7 +881,7 @@ class NavigationEngine:
                 navSolutions.X[currMeasNr] = xyzdt[0]
                 navSolutions.Y[currMeasNr] = xyzdt[1]
                 navSolutions.Z[currMeasNr] = xyzdt[2]
-                # As in MATLAB, store zero clock bias for the first solution;
+                # Store zero clock bias for the first solution;
                 # subsequent values are the estimated range-form bias [m].
                 navSolutions.dt[currMeasNr] = (
                     0 if currMeasNr == 0 else xyzdt[3])
@@ -985,8 +980,7 @@ class NavigationEngine:
             refU = settings.truePositionU
             refPointText = "Reference position"
 
-        # Figure 300 follows MATLAB and avoids overwriting auto-numbered user
-        # figures when navigation plots are closed and reopened.
+        # Use figure 300 for navigation plots.
         #=== Select or create and clear the figure ============================
         figure = plt.figure(300, figsize=(12, 8), clear=True)
         figure.canvas.manager.set_window_title("Navigation solutions")
@@ -1026,8 +1020,7 @@ class NavigationEngine:
         positionAxes.legend()
 
         #--- Satellite sky plot -----------------------------------------------
-        # Satellite sky plot. The utility follows MATLAB's
-        # satellite-by-epoch layout and spherical elevation mapping.
+        # Plot satellite-by-epoch azimuth/elevation arrays on the sky axes.
         skyPlot(skyAxes, navSolutions.az, navSolutions.el,
                 navSolutions.PRN[:, 0])
         skyAxes.set_title(

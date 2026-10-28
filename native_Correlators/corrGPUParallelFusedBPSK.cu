@@ -1,12 +1,11 @@
 ﻿/*================================================================================
- * Filename: corrGpuParallelFusedBPSK.cu
+ * Filename: corrGPUParallelFusedBPSK.cu
  * Description: CUDA DLL implementation of GPU-assisted GNSS tracking correlator for Python ctypes.
  *
  * Authors: Yafeng Li (School of Automation, Beijing Information Science and Technology University)
  * Time: Feb, 20, 2026
  *
  * Notes:
- *   - Core processing is kept compatible with the original implementation.
  *   - fileType = 1: real IF samples [I0 I1 I2 ...]
  *   - fileType = 2: complex interleaved IF samples [I0 Q0 I1 Q1 ...]
  *   - Output layout is 6 x channelCnt:
@@ -36,7 +35,7 @@
 /* Settings struct -------------------------------------------------------------
  * trkMode        : 0 - channel-serial tracking; 1 - channel-parallel tracking
  * fileType       : 1 - real samples; 2 - complex samples
- * earlyLateSpc   : half of the early - late code correlation spacing (chips)
+ * earlyLateSpc   : half of the early-late spacing in code-table points
  *------------------------------------------------------------------------------*/
 typedef struct {
 	int trkMode;
@@ -74,10 +73,10 @@ struct GPU_Complex
 	float i;
 	__host__ __device__ GPU_Complex() : r(0.0f), i(0.0f) {};
 
-	// Constructor for a complex number with real amd imag parts of float
+	// Constructor for a complex number with float real and imaginary parts
     __host__ __device__ GPU_Complex(float realPart, float imagPart) : r(realPart), i(imagPart) {}
 
-	// Magnitude of a complex number
+	// Squared magnitude of a complex number
 	__host__ __device__ float magnitude2() { return r * r + i * i; }
 
 	__device__ GPU_Complex operator*(const GPU_Complex& a) {
@@ -172,9 +171,8 @@ static int initialized = 0;
  *          chSampSize     I   logical sample count for each channel
  *          isDataRead     I   1 uploads new rawSignal data; 0 reuses it
  * Return : persistent channel-major double array with six values per channel,
- *          [IE,QE,IP,QP,IL,QL], or NULL on invalid input/CUDA failure. The
- *          pointer remains valid until corrEngineFree(); each successful
- *          corrEngine() call overwrites the array contents.
+ *          [IE,QE,IP,QP,IL,QL], or NULL on invalid input/CUDA failure.
+ *          Each successful corrEngine() call overwrites the array contents.
  *------------------------------------------------------------------------------*/
 DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenInput,
 	double earlyLateSpc, short* rawSignal, signed char* caCodeTable,

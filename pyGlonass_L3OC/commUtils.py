@@ -129,7 +129,6 @@ def calcLoopCoef(LBW, zeta, k):
 def calcLoopCoefCarr(settings):
     """Find third-order loop coefficients used by the carrier PLL.
 
-    The loop improves carrier-tracking performance under dynamic conditions.
     See Kaplan and Hegarty, *Satellite Signal Acquisition, Tracking, and Data
     Demodulation*.
 
@@ -142,7 +141,7 @@ def calcLoopCoefCarr(settings):
         pf3, pf2, pf1 - float
                     Three loop-filter coefficients.
     """
-    # Loop noise bandwidth: the third-order loop remains stable at LBW <= 18 Hz.
+    # Loop noise bandwidth in hertz.
     LBW = settings.pllNoiseBandwidth
 
     # Summation interval.
@@ -381,7 +380,7 @@ def calculatePseudoranges(trackResults, subFrameStart, TOD, currMeasSample,
         settings      - object
                       Receiver settings.
         searchIndex   - numpy.ndarray
-                      Per-channel search positions used by the Python port.
+                      Per-channel tracking-epoch search positions.
     Returns
     -------
         pseudoranges  - numpy.ndarray
@@ -736,8 +735,7 @@ def leastSquarePos(satpos, obs, settings):
     for iter in range(nmbOfIterations):
         for i in range(nmbOfSatellites):
             if iter == 0:
-                # MATLAB initializes the first linearization with a fixed
-                # two-metre tropospheric correction.
+                # Use a fixed two-metre tropospheric correction initially.
                 Rot_X = X[:, i]
                 trop = 2
             else:

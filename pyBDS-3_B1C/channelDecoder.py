@@ -782,9 +782,8 @@ class LDPCDecoder:
         Frame2_hard = Frame2_soft_I > 0
         Frame3_hard = Frame3_soft_I > 0
 
-        # Keep the deinterleaved systematic hard decisions as a fallback.
-        # Both LDPC codes are systematic, so their first information bits
-        # remain usable if EMS does not converge to a valid codeword.
+        # Retain systematic hard decisions when the EMS output fails the
+        # syndrome check. The navigation decoder checks the subframe CRC.
 
         #=== Generate SF2 LLR soft information ===============================
         normIp, normSigma2 = cls.noiseEstSF2(

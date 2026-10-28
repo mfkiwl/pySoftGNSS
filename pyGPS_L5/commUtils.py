@@ -129,7 +129,6 @@ def calcLoopCoef(LBW, zeta, k):
 def calcLoopCoefCarr(settings):
     """Find third-order loop coefficients used by the carrier PLL.
 
-    The loop improves carrier-tracking performance under dynamic conditions.
     See Kaplan and Hegarty, *Satellite Signal Acquisition, Tracking, and Data
     Demodulation*.
 
@@ -142,7 +141,7 @@ def calcLoopCoefCarr(settings):
         pf3, pf2, pf1 - float
                     Three loop-filter coefficients.
     """
-    # Loop noise bandwidth: the third-order loop remains stable at LBW <= 18 Hz.
+    # Loop noise bandwidth.
     LBW = settings.pllNoiseBandwidth
 
     # Summation interval.
@@ -238,15 +237,17 @@ def calcCNoPld(chResults, settings, loopCnt):
 
     # The L5Q prompt is stored in the quadrature-rotated orientation used
     # by the MATLAB Calc_CNo_PLD implementation.
-    Q_P = chResults.Pilot_I_P[firstIndex:lastIndex]
-    I_P = chResults.Pilot_Q_P[firstIndex:lastIndex]
-    pilotCNo = 10 ** (CNoVSM(I_P, Q_P, T) / 10)
-    CNo[1] = 10 * np.log10(pilotCNo)
-    NBP = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
-           + np.sum(Q_P) ** 2)
-    NBD = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
-           - np.sum(Q_P) ** 2)
-    pllDetector[1] = NBD / NBP
+    pilotCNo = 0
+    if settings.pilotTRKflag == 1:
+        Q_P = chResults.Pilot_I_P[firstIndex:lastIndex]
+        I_P = chResults.Pilot_Q_P[firstIndex:lastIndex]
+        pilotCNo = 10 ** (CNoVSM(I_P, Q_P, T) / 10)
+        CNo[1] = 10 * np.log10(pilotCNo)
+        NBP = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
+               + np.sum(Q_P) ** 2)
+        NBD = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
+               - np.sum(Q_P) ** 2)
+        pllDetector[1] = NBD / NBP
 
     CNo[2] = 10 * np.log10(dataCNo + pilotCNo)
     return CNo, pllDetector
@@ -379,7 +380,7 @@ def calculatePseudoranges(trackResults, subFrameStart, TOW, currMeasSample,
         settings      - object
                       Receiver settings.
         searchIndex   - numpy.ndarray
-                      Per-channel search positions used by the Python port.
+                      Cached per-channel search positions, updated in place.
     Returns
     -------
         pseudoranges  - numpy.ndarray
@@ -710,7 +711,8 @@ def leastSquarePos(satpos, obs, settings):
     Returns
     -------
         pos         - numpy.ndarray
-                    Receiver ECEF position and clock error ``[X, Y, Z, dt]``.
+                    Receiver ECEF position and clock bias ``[X, Y, Z, dt]``,
+                    all in metres.
         el          - numpy.ndarray
                     Satellite elevation angles in degrees.
         az          - numpy.ndarray
@@ -977,7 +979,7 @@ def cart2utm(X, Y, Z, zone):
         N           - float
                     UTM northing.
         U           - float
-                    UTM up coordinate.
+                    ED50 ellipsoidal height in metres, not local ENU up.
     """
     from math import atan2, atanh
 

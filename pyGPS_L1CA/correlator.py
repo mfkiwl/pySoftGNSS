@@ -804,7 +804,7 @@ def codeSampling(settings,PRN,sampleLen):
     # Digitizing --------------------------------------------------------------
     # Make indices to read C/A code values. The length of the index array
     # depends on the sampling frequency
-    codeValueIndex = np.mod(np.floor(ts/tc * np.arange(sampleLen)),
+    codeValueIndex = np.mod(np.floor((ts * np.arange(sampleLen)) / tc),
                             settings.codeLength).astype(np.int32)
 
     # Make the digitized version of the C/A code ------------------------------

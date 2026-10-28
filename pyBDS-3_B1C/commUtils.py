@@ -246,16 +246,14 @@ def calcWeighingFactor(settings):
     """
     from scipy.integrate import quad
 
-    # Code frequency and code-chip length.
+    # Primary-code frequency [Hz] and chip period [s].
     fc = settings.codeFreqBasis
     Tc = 1 / fc
     # Front-end bandwidth.
     Br = settings.FEBW
 
     #--- Power ratio and RMS bandwidth of the data channel ------------------
-    # PSD of the data-channel BOC(1,1) component. The sinc/tangent form is
-    # algebraically identical to CalcWeighingFactor.m and retains its
-    # removable limits at f = 0 and the BOC spectral nulls.
+    # PSD of the data-channel BOC(1,1) component.
     def G_BOC1_1f(f):
         """Return the BOC(1,1) data-channel power spectral density.
 
@@ -477,7 +475,7 @@ def calculatePseudoranges(trackResults, subFrameStart, TOW, currMeasSample,
         settings      - object
                       Receiver settings.
         searchIndex   - numpy.ndarray
-                      Per-channel search positions used by the Python port.
+                      Cached per-channel search positions, updated in place.
     Returns
     -------
         pseudoranges  - numpy.ndarray
@@ -520,8 +518,7 @@ def calculatePseudoranges(trackResults, subFrameStart, TOW, currMeasSample,
 
         # Form transmitting time [s]. codePhase/codeLength is the fractional
         # B1C primary-code period; index-subFrameStart is the integer number
-        # of 10 ms periods. Keeping codeLength/codeFreqBasis in the formula
-        # preserves the MATLAB BDS timing rather than assuming a 1 ms epoch.
+        # of 10 ms periods.
         transmitTime[channelNr] = (
             (codePhase / settings.codeLength + index - subFrameStart[channelNr])
             * settings.codeLength / settings.codeFreqBasis + TOW[channelNr])
@@ -811,7 +808,8 @@ def leastSquarePos(satpos, obs, settings):
     Returns
     -------
         pos         - numpy.ndarray
-                    Receiver ECEF position and clock error ``[X, Y, Z, dt]``.
+                    Receiver ECEF position and clock bias ``[X, Y, Z, dt]``,
+                    all in metres.
         el          - numpy.ndarray
                     Satellite elevation angles in degrees.
         az          - numpy.ndarray
@@ -1078,7 +1076,7 @@ def cart2utm(X, Y, Z, zone):
         N           - float
                     UTM northing.
         U           - float
-                    UTM up coordinate.
+                    ED50 ellipsoidal height in metres, not local ENU up.
     """
     from math import atan2, atanh
 

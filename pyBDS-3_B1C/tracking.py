@@ -136,12 +136,12 @@ class TrackingEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -151,7 +151,7 @@ class TrackingEngine():
 
         The channels are processed using channel-serial tracking mode. Each
         correlator call processes the data BOC(1,1), pilot BOC(1,1), and pilot
-        BOC(6,1) branches on the common 12-times-primary-code grid.
+        BOC(6,1) branches on the common 12-point-per-primary-chip grid.
 
         Args
         ----
@@ -241,18 +241,18 @@ class TrackingEngine():
                                        + int(acqResults.codePhase[channelNr])))
 
             # Get the B1C data-channel BOC(1,1) waveform on the 12x grid and
-            # add one guard value at each end.
+            # add 12 guard subchips at each end.
             B1CData = generateDataBOC11(settings, chResults.PRN)
-            B1CData = np.concatenate(([B1CData[-1]], B1CData, [B1CData[0]]))
+            B1CData = np.concatenate((B1CData[-12:], B1CData, B1CData[:12]))
 
             # Get the pilot BOC(1,1) and BOC(6,1) spreading waveforms and
             # add the same guard values required by Early/Late indexing.
             pilotBOC11 = generatePilotBOC11(settings, chResults.PRN)
-            pilotBOC11 = np.concatenate(([pilotBOC11[-1]], 
-                                         pilotBOC11, [pilotBOC11[0]]))
+            pilotBOC11 = np.concatenate((pilotBOC11[-12:], 
+                                         pilotBOC11, pilotBOC11[:12]))
             pilotBOC61 = generatePilotBOC61(settings, chResults.PRN)
-            pilotBOC61 = np.concatenate(([pilotBOC61[-1]], 
-                                         pilotBOC61, [pilotBOC61[0]]))
+            pilotBOC61 = np.concatenate((pilotBOC61[-12:], 
+                                         pilotBOC61, pilotBOC61[:12]))
 
             # Store the three branches in the shared QMBOC table layout.
             B1CCodeTable = np.concatenate((B1CData, pilotBOC11, pilotBOC61))
@@ -339,7 +339,8 @@ class TrackingEngine():
                 # Carrier phase step in rad/sample.
                 carrPhaseStep = (carrFreq * 2.0 * np.pi / settings.samplingFreq)
                 # The correlator code phase uses the 12x local-code grid.
-                remCodePhase12 = remCodePhase * 12
+                # The 12-point prefix adds 11 indices to the phase mapping.
+                remCodePhase12 = remCodePhase * 12 + 11
                 codePhaseStep12 = codePhaseStep * 12
 
                 if settings.correlatorType == 0:
@@ -600,7 +601,8 @@ class TrackingEngine():
         #%% Generate B1C code tables for acquired signals =================
         # Each row contains three guarded 12x-grid branches:
         # [data BOC(1,1), pilot BOC(1,1), pilot BOC(6,1)].
-        branchLength = codeLength * 12 + 2
+        # Each code branch has 12 guard subchips at each end.
+        branchLength = codeLength * 12 + 24
         B1CCodeTable = np.empty((channelCnt, branchLength * 3), dtype=np.float64)
 
         for channelNr in range(channelCnt):
@@ -611,18 +613,18 @@ class TrackingEngine():
             # Data-channel BOC(1,1) waveform with guard values.
             B1CData = generateDataBOC11(
                 settings, chResults.PRN)
-            B1CData = np.concatenate(([B1CData[-1]], B1CData, [B1CData[0]]))
+            B1CData = np.concatenate((B1CData[-12:], B1CData, B1CData[:12]))
             
             # Pilot BOC(1,1) waveform with guard values.
             pilotBOC11 = generatePilotBOC11(settings, chResults.PRN)
             pilotBOC11 = np.concatenate(
-                            ([pilotBOC11[-1]], pilotBOC11, [pilotBOC11[0]]))
+                            (pilotBOC11[-12:], pilotBOC11, pilotBOC11[:12]))
            
             # Pilot BOC(6,1) waveform with guard values.
             pilotBOC61 = generatePilotBOC61(
                 settings, chResults.PRN)
             pilotBOC61 = np.concatenate(
-                            ([pilotBOC61[-1]], pilotBOC61, [pilotBOC61[0]]))
+                            (pilotBOC61[-12:], pilotBOC61, pilotBOC61[:12]))
 
             # Store the three guarded branches in the common QMBOC layout.
             B1CCodeTable[channelNr] = np.concatenate(
@@ -638,7 +640,7 @@ class TrackingEngine():
         #%% Initialize waitbar and variables for data reading =============
         # Number of coherent B1C tracking intervals to process.
         numToProcess = trkResults[0].I_P.size
-        # Update the GUI less often for the faster compiled correlators.
+        # Update the GUI less often for the compiled correlators.
         if settings.correlatorType == 0:
             # NumPy reference QMBOC correlator.
             barUprate = 5
@@ -750,7 +752,8 @@ class TrackingEngine():
            
             # Zero-based start of each channel interval within rawSignal.
             startIdx = np.asarray(absoluteSample - blkStartIdx,dtype=np.int32)
-            remCodePhase12 = remCodePhase * 12
+            # Convert to the 12x grid and add 11 for the extended prefix.
+            remCodePhase12 = remCodePhase * 12 + 11
             codePhaseStep12 = codePhaseStep * 12
 
             # All backends return an 18 x channelCnt matrix containing the

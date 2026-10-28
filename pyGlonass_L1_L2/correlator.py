@@ -674,8 +674,7 @@ def generateCAcode(settings, K=0):
     """Generate one period of the common GLONASS L1/L2 C/A code.
 
     The same 511-chip ranging code is used by every GLONASS FDMA frequency
-    channel. The channel number K is accepted to preserve the common
-    pySoftGNSS code-generator interface.
+    channel.
 
     Args
     ----
@@ -698,8 +697,7 @@ def generateCAcode(settings, K=0):
     reg = -np.ones(9, dtype=np.int8)
     code = np.empty(codeLength, dtype=np.int8)
 
-    # Python uses zero-based indices, so MATLAB register stages 7, 5 and 9
-    # are addressed below as 6, 4 and 8.
+    # Register stages 7, 5 and 9 use zero-based indices 6, 4 and 8.
     for index in range(codeLength):
         # Output from the seventh register stage.
         code[index] = reg[6]
@@ -737,9 +735,9 @@ def codeSampling(settings, K, sampleLen):
 
     # Make zero-based indices at code-rate/sampling-rate increments and wrap
     # samples beyond the 511-chip code period.
+    stepSize = settings.codeFreqBasis / settings.samplingFreq
     codeValueIndex = np.mod(
-        np.floor(np.arange(sampleLen, dtype=np.float64) *
-                 settings.codeFreqBasis/settings.samplingFreq),
+        np.floor(np.arange(sampleLen, dtype=np.float64) * stepSize),
         settings.codeLength).astype(np.int32)
 
     return caCode[codeValueIndex]

@@ -165,15 +165,15 @@ class CorrGPUSerialQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Vector = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=1, flags="C_CONTIGUOUS")
+        float32Vector = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
         self._gpuLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Vector,       # B2aCodeTable
+            float32Vector,    # B2aCodeTable
             ctypes.c_int,     # codeLen for one QPSK branch
             ctypes.c_double,  # remCarrPhase
             ctypes.c_double,  # carrPhaseStep
@@ -199,7 +199,7 @@ class CorrGPUSerialQPSK:
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             B2aCodeTable - numpy.ndarray
-                        Concatenated guarded int8 B2a data/B2a pilot codes:
+                        Concatenated guarded float32 B2a data/B2a pilot codes:
                         ``[B2a data(last, period, first),
                         B2a pilot(last, period, first)]``.
             remCarrPhase - float
@@ -391,8 +391,8 @@ class CorrGPUParallelQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Table = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=2, flags="C_CONTIGUOUS")
+        float32Table = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
         float64Vector = np.ctypeslib.ndpointer(
@@ -403,7 +403,7 @@ class CorrGPUParallelQPSK:
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Table,        # B2aCodeTable
+            float32Table,     # B2aCodeTable
             ctypes.c_int,     # codeLen for one QPSK branch
             ctypes.c_int,     # channelCnt
             float64Vector,    # remCarrPhase
@@ -432,7 +432,7 @@ class CorrGPUParallelQPSK:
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             B2aCodeTable - numpy.ndarray
-                        C-contiguous int8 table containing concatenated
+                        C-contiguous float32 table containing concatenated
                         guarded B2a data/B2a pilot code branches for every channel.
             remCarrPhase - numpy.ndarray
                          Residual carrier phases in radians.
@@ -948,7 +948,7 @@ def codeSampling(settings, PRN, sampleLen, component):
     #--- Make the index array used to read B2a-code values ----------------
     # The length of the index array depends on the sampling frequency.
     codeValueIndex = np.ceil(
-        ts / tc * np.arange(1, sampleLen + 1)).astype(np.int32) - 1
+        (ts * np.arange(1, sampleLen + 1)) / tc).astype(np.int32) - 1
 
     #--- Correct the last index due to number-rounding issues -------------
     codeValueIndex[-1] = settings.codeLength - 1

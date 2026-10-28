@@ -247,8 +247,7 @@ class TrackingEngine():
             for loopCnt in range(codePeriods):
 
                 #%% GUI update ============================================
-                # Update the progress display periodically. This keeps the
-                # interface responsive without repainting every millisecond.
+                # Update the progress display at the configured interval.
                 if ((loopCnt + 1) % barUprate == 0 or
                         loopCnt + 1 == codePeriods):
                     trackingStatus = (
@@ -413,8 +412,7 @@ class TrackingEngine():
 
         settings = self.settings
         #--- Copy result variables for all channels -----------------------
-        # Channel objects already contain the preallocated result arrays that
-        # MATLAB constructs at the beginning of trkChannelsParallel.m.
+        # Channel objects already contain the preallocated result arrays.
         trkResults = self.trackResults
         # Number of active channels to be tracked.
         channelCnt = int(min(sum(acqResults.acqFlag), settings.numberOfChannels))
@@ -489,7 +487,7 @@ class TrackingEngine():
         tau1carr, tau2carr = calcLoopCoef(
             settings.pllNoiseBandwidth, settings.pllDampingRatio, 0.25)
 
-        # Update the GUI less often for the faster compiled correlators.
+        # Update the GUI less often for the compiled correlators.
         if settings.correlatorType == 0:
             barUprate = 50
         else:

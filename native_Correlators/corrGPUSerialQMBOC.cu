@@ -1,13 +1,12 @@
 /*================================================================================
  * Filename: corrGPUSerialQMBOC.cu
  * Description: GPU-assisted single-channel QMBOC tracking correlator exposed
- *              through a small C ABI for Python ctypes.
+ *              through a C interface for Python ctypes.
  *
  * Authors: Yafeng Li (School of Automation, Beijing Information Science and Technology University)
  * Time: Apr, 21, 2026
  *
- * The core processing stages are intentionally kept aligned with the
- * GPU channel-parallel correlator:
+ * Processing stages:
  *   1) mixCarrReal() / mixCarrComplex()
  *   2) correlator()
  *
@@ -76,10 +75,10 @@ struct GPU_Complex
     float i;
     __host__ __device__ GPU_Complex() : r(0.0f), i(0.0f) {}
 
-    // Constructor for a complex number with real amd imag parts of float
+    // Constructor for a complex number with float real and imaginary parts
     __host__ __device__ GPU_Complex(float realPart, float imagPart) : r(realPart), i(imagPart) {}
 
-    // Magnitude of a complex number
+    // Squared magnitude of a complex number
     __host__ __device__ float magnitude2() { return r * r + i * i; }
 
     __device__ GPU_Complex operator*(const GPU_Complex& a) {
@@ -188,8 +187,8 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenIn, double earlyLate
 
     if (!initialized)
     {
-        /* Validate the interface before the first allocation. Later calls stay
-           on the same fast path and reuse the initialized configuration. */
+        /* Validate the interface before the first allocation. Later calls
+           reuse the initialized configuration. */
         // gateway check
         if (!checkInputs(fileType, rawSignalLenIn, rawSignal, caCode, codeLen)) {
             return NULL;
@@ -228,13 +227,12 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenIn, double earlyLate
         blockPerGrid = (blksize + 100 + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 
         /* The combined QMBOC code table is arranged as:
-             [B1CData(last,1..N,first), pilotBOC11(last,1..N,first),
-              pilotBOC61(last,1..N,first)].
+             [guarded B1CData, guarded pilotBOC11,
+              guarded pilotBOC61].
            Only the small Early/Prompt/Late phase shift is kept here. The data/pilot
            branch offset is added later as an integer index in the CUDA kernel,
            avoiding loss of fractional code-phase precision in float arithmetic.
-           The shifts are used with ceil-style indexing to match the MATLAB
-           reference correlator: index = ceil(codePhase + shift). */
+           Code-table indexes are formed as ceil(codePhase + shift). */
         float initCodePhase[CORR_NUMBER] = {
             (float)(-settings.earlyLateSpc),
             0.0f,
@@ -338,7 +336,7 @@ DLL_EXPORT void corrEngineFree(void)
  */
 __global__ void mixCarrReal(const short* d_pRawSignal, GPU_Complex* d_BasebandSignal, int blksize, float remCarrPhase, float carrPhaseStep)
 {
-    // CUDA version of floating point NCO and vector dot product integrated
+    // Generate the carrier replica and wipe off the carrier.
 
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < blksize; index += blockDim.x * gridDim.x) {
         float sin, cos;
@@ -356,7 +354,7 @@ __global__ void mixCarrReal(const short* d_pRawSignal, GPU_Complex* d_BasebandSi
 __global__ void mixCarrComplex(const short* d_pRawSignal, GPU_Complex* d_BasebandSignal,
     int blksize, float remCarrPhase, float carrPhaseStep)
 {
-    // CUDA version of floating point NCO and vector dot product integrated
+    // Generate the carrier replica and wipe off the carrier.
     const short2* d_pRawSignalIQ = reinterpret_cast<const short2*>(d_pRawSignal);
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < blksize; index += blockDim.x * gridDim.x) {
         float sin, cos;

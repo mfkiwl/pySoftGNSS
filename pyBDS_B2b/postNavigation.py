@@ -190,7 +190,6 @@ class Ephemeris:
                 object.
         """
         #%% Preparation for data-message decoding ==========================
-        # Check that the input has the form required by the MATLAB decoder.
         if not isinstance(navBitsBin, str):
             raise TypeError("The parameter BITS must be a character array!")
         if len(navBitsBin) < 486:
@@ -310,8 +309,7 @@ class Ephemeris:
             trackResult - tracking.Channel
                         Prompt I/Q tracking outputs for one satellite.
             settings    - initSettings.Settings
-                        Receiver settings; retained for interface consistency
-                        with the other navigation decoders.
+                        Receiver settings.
 
         Returns
         -------
@@ -525,7 +523,7 @@ class NavSolutions:
         self.currMeasSample = np.full(measNrSum, -1, dtype=np.int64)
         self.localTime = np.full(measNrSum, np.nan)
 
-        # WGS-84 geodetic and legacy ED50/UTM coordinates.
+        # WGS-84 geodetic and ED50/UTM coordinates.
         self.latitude  = np.full(measNrSum, np.nan)
         self.longitude = np.full(measNrSum, np.nan)
         self.height    = np.full(measNrSum, np.nan)
@@ -606,8 +604,7 @@ class NavigationEngine:
         # TOW of the first valid message [s]; infinity indicates no detection.
         TOW = np.full(settings.numberOfChannels, np.inf)
 
-        #--- Make a list excluding channels not in tracking lock ----------
-        # Make a list containing only channels that remain in tracking lock.
+        #--- Select channels that completed tracking processing ----------
         activeChnList = [
             channelNr for channelNr, channel in enumerate(trackResults)
             if channel.lockFlag ]
@@ -674,7 +671,7 @@ class NavigationEngine:
         # advanced by the navigation-solution interval.
         localTime = None
 
-        # Preallocate results in MATLAB's channel-by-epoch orientation.
+        # Allocate channel-by-epoch navigation results.
         self.navSolutions = NavSolutions(settings.numberOfChannels, measNrSum)
         navSolutions = self.navSolutions
 
@@ -692,9 +689,7 @@ class NavigationEngine:
                 trackResults[channelNr].PRN
                 for channelNr in activeChnList ]
 
-            # Elevation, azimuth, transmit-time, and clock-correction arrays
-            # were preallocated with NaN. Satellites excluded by the elevation
-            # mask therefore do not jump to position (0, 0) in the sky plot.
+            # Excluded channels retain NaN for satellite angles, times and clocks.
 
             # Absolute IF-sample position of the current measurement epoch.
             currMeasSample = int(sampleStart+measSampleStep*currMeasNr)
@@ -746,8 +741,8 @@ class NavigationEngine:
                 navSolutions.X[currMeasNr] = xyzdt[0]
                 navSolutions.Y[currMeasNr] = xyzdt[1]
                 navSolutions.Z[currMeasNr] = xyzdt[2]
-                # As in MATLAB, store zero clock bias for the first solution;
-                # subsequent values are the estimated range-form bias [m].
+                # Store zero clock bias for the first solution; subsequent
+                # values are the estimated range-form bias [m].
                 navSolutions.dt[currMeasNr] = (
                     0 if currMeasNr == 0 else xyzdt[3])
 
@@ -776,7 +771,7 @@ class NavigationEngine:
                     xyzdt[0], xyzdt[1], xyzdt[2], 5)
 
                 #=== Convert to the UTM coordinate system =====================
-                # Convert ECEF to the legacy ED50/UTM coordinates.
+                # Convert ECEF to ED50/UTM coordinates.
                 # Select the UTM longitudinal zone.
                 navSolutions.utmZone = findUtmZone(
                     navSolutions.latitude[currMeasNr], navSolutions.longitude[currMeasNr])
@@ -784,8 +779,7 @@ class NavigationEngine:
                 (navSolutions.E[currMeasNr],navSolutions.N[currMeasNr],
                  navSolutions.U[currMeasNr]) = cart2utm(xyzdt[0], xyzdt[1],
                                                 xyzdt[2],navSolutions.utmZone)
-                # E, N and U contain the receiver position in the local
-                # east, north and up coordinate directions.
+                # E/N are UTM easting/northing; U is ellipsoidal height [m].
             else:
                 #--- Not enough satellites to find a 3-D position -------------
                 # There are not enough satellites for a 3-D position. Result
@@ -793,14 +787,9 @@ class NavigationEngine:
                 print(f"   Measurement No. {currMeasNr+1}: Not enough "
                       "information for position solution.")
 
-                # Missing solutions retain NaN and are automatically omitted
-                # from the plots. DOP retains zeros because that is more
-                # convenient for plotting; later processing must exclude NaN
-                # values when computing statistics.
+                # Unavailable coordinates remain NaN; DOP remains zero.
 
-                # Known MATLAB limitation: positions/elevations of masked
-                # satellites are not updated, so a rising satellite cannot
-                # re-enter after it has been excluded by the elevation mask.
+                # Excluded satellites are not reconsidered at later epochs.
 
             # === Update local time by one measurement step ===================
             # Advance receiver time by one navigation-solution interval.
@@ -847,8 +836,7 @@ class NavigationEngine:
             refU = settings.truePositionU
             refPointText = "Reference position"
 
-        # Figure 300 follows MATLAB and avoids overwriting auto-numbered user
-        # figures when navigation plots are closed and reopened.
+        # Use figure 300 for navigation plots.
         #=== Select or create and clear the figure ============================
         figure = plt.figure(300, figsize=(12, 8), clear=True)
         figure.canvas.manager.set_window_title("Navigation solutions")
@@ -862,7 +850,7 @@ class NavigationEngine:
 
         #%% Plot all figures
         #--- Coordinate differences in the UTM system -------------------------
-        # Coordinate variations in the legacy UTM system.
+        # Coordinate variations in the ED50/UTM system.
         coordinateAxes.plot(navSolutions.E-refE, label="E")
         coordinateAxes.plot(navSolutions.N-refN, label="N")
         coordinateAxes.plot(navSolutions.U-refU, label="U")
@@ -874,7 +862,7 @@ class NavigationEngine:
         coordinateAxes.grid(True)
 
         #--- Position plot in the UTM system ----------------------------------
-        # Horizontal position offsets in the legacy UTM system.
+        # Horizontal position offsets in the ED50/UTM system.
         positionAxes.plot(navSolutions.E-refE, navSolutions.N-refN, "+",
                           label="Measurements")
         # Plot the reference point at the origin of the offset coordinates.

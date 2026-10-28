@@ -42,11 +42,7 @@ from correlator import generate2ndCode
 
 #%% GPS L1C broadcast ephemeris
 class Ephemeris:
-    """Keep and decode one GPS L1C CNAV-2 broadcast ephemeris.
-
-    This ensures that the ephemeris of each satellite has a similar structure
-    when only one or none of the requisite CNAV-2 subframes is decoded.
-    """
+    """Store and decode GPS L1C CNAV-2 broadcast ephemeris."""
 
     def __init__(self):
         """Initialize the CNAV-2 ephemeris and validity fields.
@@ -178,9 +174,9 @@ class Ephemeris:
     def decodeEphemeris(self, navBitsBin):
         """Decode GPS L1C CNAV-2 ephemeris and TOW.
 
-        The input must contain one 883-bit sequence: TOI(9), subframe 2(600),
-        and subframe 3(274). BCH, LDPC and CRC checks are completed before
-        this method is called.
+        The input contains 883 bits: TOI(9), subframe 2(600), and subframe
+        3(274), after BCH/LDPC decoding. Both LDPC information blocks include
+        their 24 CRC bits. NAVdecoding checks both CRCs before field extraction.
 
         Args
         ----
@@ -194,7 +190,7 @@ class Ephemeris:
                         TOW and the decoded SV ephemeris are stored in this
                         object.
         """
-        #%% Check and prepare the supplied bit sequence
+        #%% Prepare the supplied bit sequence
         # Keep the bits in one row as required by the field-conversion logic.
         bits = np.asarray(navBitsBin, dtype=np.int8).reshape(-1)
         # Pi used in the GPS coordinate system.
@@ -208,7 +204,7 @@ class Ephemeris:
         TOI = u(bits[:9])
 
         #%% Decode subframe 2: ephemeris and clock
-        # Subframe 2 contains 600 non-variable ephemeris and clock bits.
+        # Subframe 2 contains 576 message bits followed by 24 CRC bits.
         sf2 = bits[9:609]
         #--- General data fields ----------------------------------------------
         # Week number.
@@ -281,7 +277,7 @@ class Ephemeris:
         self.WN_op = u(sf2[566:574])
 
         #%% Decode subframe 3: variable data
-        # Subframe 3 contains 274 variable page bits.
+        # Subframe 3 contains 250 variable-page bits followed by 24 CRC bits.
         sf3 = bits[609:883]
         # PRN and page identifier.
         self.PRN = u(sf3[0:8])
@@ -345,17 +341,48 @@ class Ephemeris:
         self.flag = 1
 
     @staticmethod
+    def cnav2CheckCrc(bits):
+        """Check the CRC-24Q of a decoded GPS L1C CNAV-2 subframe.
+
+        The complete subframe includes its 24 transmitted CRC bits. A zero
+        remainder indicates that the CRC check has passed.
+
+        Args
+        ----
+            bits        - array-like
+                        Subframe bits in transmission order, represented by
+                        0 or 1: 600 bits for Subframe 2 or 274 for Subframe 3.
+        Returns
+        -------
+            hasError    - bool
+                        False if the CRC check passes; True if it fails.
+        """
+        #--- Initialize the CRC-24Q register and polynomial ----------------
+        # The leading x^24 term of 0x1864CFB is implicit.
+        crc = 0
+        poly = 0x864CFB
+        mask = 0xFFFFFF
+
+        #--- Divide the complete subframe, most-significant bit first ------
+        for bit in bits:
+            feedback = (crc >> 23) ^ int(bit)
+            crc = (crc << 1) & mask
+            if feedback:
+                crc ^= poly
+        return crc != 0
+
+    @staticmethod
     def _deinterleave(interleaved):
         """Undo the CNAV-2 38-by-46 block interleaver.
 
         Args
         ----
             interleaved - array-like
-                        Interleaved CNAV-2 subframe-2 and subframe-3 symbols.
+                        The 1748 interleaved subframe-2 and subframe-3 symbols.
         Returns
         -------
             deinterleaved - numpy.ndarray
-                          Symbols restored to their LDPC codeword order.
+                          The 1200-symbol H2 and 548-symbol H3 codewords.
         """
         # Restore the transmitted 38-by-46 matrix and read it in the inverse
         # column order used by the CNAV-2 block interleaver.
@@ -368,7 +395,9 @@ class Ephemeris:
 
         Pilot-overlay-code correlation supplies frame synchronization. The
         52-symbol first subframe is BCH decoded; the remaining symbols are
-        deinterleaved and decoded by the H2 and H3 LDPC decoders.
+        deinterleaved and decoded by the H2 and H3 LDPC decoders. Both
+        subframe CRCs must pass before ephemeris decoding. Each frame lasts
+        18 s and contains 1800 symbols of 10 ms duration.
 
         Args
         ----
@@ -383,15 +412,13 @@ class Ephemeris:
                            Decoded broadcast ephemeris.
             firstSubFrame  - int or float
                            Zero-based frame-start index in 10 ms tracking
-                           epochs, or infinity when no valid frame is found.
+                           epochs, or infinity when no frame is accepted.
             TOW            - float
-                           TOW preceding the decoded frame, in seconds.
+                           Frame timing reference: decoded TOW minus 18 s.
         """
         #--- Initialize the ephemeris structure -------------------------------
-        # Use a common structure even when none of the requisite messages is
-        # decoded for this satellite.
         eph = cls()
-        # Starting position and TOW of the first valid navigation frame.
+        # Starting position and TOW of the first accepted navigation frame.
         firstSubFrame = np.inf
         TOW = np.inf
         # One CNAV-2 frame comprises 1800 symbols; the BCH-protected TOI
@@ -402,7 +429,7 @@ class Ephemeris:
         H2, H3 = LDPCDecoder.getH_information()
 
         #%% Frame synchronization using the pilot-channel overlay code
-        # Select the prompt pilot component used by the tracking configuration.
+        # Joint tracking uses pilot I; data-only loop tracking uses pilot Q.
         syncSoft = (trackResult.Pilot_I_P if settings.pilotTRKflag
                     else trackResult.Pilot_Q_P)
         # Threshold the prompt output and convert it to -1 and +1.
@@ -476,9 +503,16 @@ class Ephemeris:
             # Assemble TOI, subframe 2 and subframe 3 in the 883-bit layout
             # required by the ephemeris decoder.
             decodedNavBits = np.r_[decodedToi, sf2[:600], sf3[:274]]
+
+            #--- Check CRC-24Q of Subframes 2 and 3 ------------------------
+            sf2Error = cls.cnav2CheckCrc(decodedNavBits[9:609])
+            sf3Error = cls.cnav2CheckCrc(decodedNavBits[609:883])
+            if sf2Error or sf3Error:
+                continue
+
             eph.decodeEphemeris(decodedNavBits.astype(np.int8))
             eph.PRN = trackResult.PRN
-            # Save only the first valid frame and its preceding TOW.
+            # Save the first accepted frame and subtract one frame from TOW.
             firstSubFrame = int(frameStart)
             TOW = eph.TOW - 18
             if settings.plotNavigation:
@@ -496,12 +530,12 @@ class Ephemeris:
         Args
         ----
             transmitTime - float
-                         Satellite signal transmission time in seconds.
+                         Satellite signal transmission GPST, in seconds.
         Returns
         -------
             satPosition - numpy.ndarray
                         Satellite position in the ECEF coordinate system
-                        ``[X, Y, Z]``.
+                        ``[X, Y, Z]`` in metres at transmission time.
             satClkCorr  - float
                         Satellite-clock correction in seconds.
         """
@@ -628,7 +662,8 @@ class NavSolutions:
         """
         channelShape = (numberOfChannels, measNrSum)
 
-        # Satellite information for each channel and measurement epoch.
+        # Satellite information for each channel and measurement epoch:
+        # angles [degrees], times/clock corrections [s], pseudoranges [m].
         # NaN elevation/azimuth values keep unused satellites out of skyPlot.
         self.PRN          = np.zeros(channelShape, dtype=np.int16)
         self.el           = np.full(channelShape, np.nan)
@@ -647,11 +682,11 @@ class NavSolutions:
         self.Z  = np.full(measNrSum, np.nan)
         self.dt = np.full(measNrSum, np.nan)
 
-        # Measurement location and receiver BDT.
+        # Measurement location [logical samples] and receiver GPST [s].
         self.currMeasSample = np.full(measNrSum, -1, dtype=np.int64)
         self.localTime = np.full(measNrSum, np.nan)
 
-        # WGS-84 geodetic and legacy ED50/UTM coordinates.
+        # WGS-84 geodetic and ED50/UTM coordinates.
         self.latitude  = np.full(measNrSum, np.nan)
         self.longitude = np.full(measNrSum, np.nan)
         self.height    = np.full(measNrSum, np.nan)
@@ -730,8 +765,8 @@ class NavigationEngine:
         # TOW of the first valid message [s]; infinity indicates no detection.
         TOW = np.full(settings.numberOfChannels, np.inf)
 
-        #--- Make a list excluding channels not in tracking lock ----------
-        # Make a list containing only channels that remain in tracking lock.
+        #--- Make a list of completed tracking channels --------------------
+        # lockFlag marks channels whose tracking loop completed.
         activeChnList = [
             channelNr for channelNr, channel in enumerate(trackResults)
             if channel.lockFlag ]
@@ -867,7 +902,7 @@ class NavigationEngine:
                 navSolutions.X[currMeasNr] = xyzdt[0]
                 navSolutions.Y[currMeasNr] = xyzdt[1]
                 navSolutions.Z[currMeasNr] = xyzdt[2]
-                # As in MATLAB, store zero clock bias for the first solution;
+                # Store zero clock bias for the first solution;
                 # subsequent values are the estimated range-form bias [m].
                 navSolutions.dt[currMeasNr] = (
                     0 if currMeasNr == 0 else xyzdt[3])
@@ -897,7 +932,7 @@ class NavigationEngine:
                     xyzdt[0], xyzdt[1], xyzdt[2], 5)
 
                 #=== Convert to the UTM coordinate system =====================
-                # Convert ECEF to the legacy ED50/UTM coordinates.
+                # Convert ECEF to ED50/UTM coordinates.
                 # Select the UTM longitudinal zone.
                 navSolutions.utmZone = findUtmZone(
                     navSolutions.latitude[currMeasNr], navSolutions.longitude[currMeasNr])
@@ -905,8 +940,8 @@ class NavigationEngine:
                 (navSolutions.E[currMeasNr],navSolutions.N[currMeasNr],
                  navSolutions.U[currMeasNr]) = cart2utm(xyzdt[0], xyzdt[1],
                                                 xyzdt[2],navSolutions.utmZone)
-                # E, N and U contain the receiver position in the local
-                # east, north and up coordinate directions.
+                # E/N are UTM easting/northing; U is the ED50 ellipsoidal
+                # height returned by cart2utm.
             else:
                 #--- Not enough satellites to find a 3-D position -------------
                 # There are not enough satellites for a 3-D position. Result
@@ -968,8 +1003,6 @@ class NavigationEngine:
             refU = settings.truePositionU
             refPointText = "Reference position"
 
-        # Figure 300 follows MATLAB and avoids overwriting auto-numbered user
-        # figures when navigation plots are closed and reopened.
         #=== Select or create and clear the figure ============================
         figure = plt.figure(300, figsize=(12, 8), clear=True)
         figure.canvas.manager.set_window_title("Navigation solutions")
@@ -983,7 +1016,7 @@ class NavigationEngine:
 
         #%% Plot all figures
         #--- Coordinate differences in the UTM system -------------------------
-        # Coordinate variations in the legacy UTM system.
+        # Coordinate variations in the ED50/UTM system.
         coordinateAxes.plot(navSolutions.E-refE, label="E")
         coordinateAxes.plot(navSolutions.N-refN, label="N")
         coordinateAxes.plot(navSolutions.U-refU, label="U")
@@ -995,7 +1028,7 @@ class NavigationEngine:
         coordinateAxes.grid(True)
 
         #--- Position plot in the UTM system ----------------------------------
-        # Horizontal position offsets in the legacy UTM system.
+        # Horizontal position offsets in the ED50/UTM system.
         positionAxes.plot(navSolutions.E-refE, navSolutions.N-refN, "+",
                           label="Measurements")
         # Plot the reference point at the origin of the offset coordinates.

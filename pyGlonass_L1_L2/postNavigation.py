@@ -210,10 +210,9 @@ class Ephemeris:
     def decodeEphemeris(self, navBiBinaryBitsSamples):
         """Decode GLONASS ephemerides and TOD from 15 navigation strings.
 
-        The stream contains 1275 bi-binary navigation bits represented by ten
-        tracking accumulations per bi-binary half-bit. The first element must
-        be the first bit of a string. The ID of the first string in the array
-        is not important.
+        The input contains 25500 prompt I values at 1 ms intervals: fifteen
+        1.7 s data sections with the time marks removed. Each ten values
+        form one bi-binary half-bit; decoding yields fifteen 85-bit strings.
 
         Args
         ----
@@ -570,7 +569,7 @@ class NavSolutions:
         self.currMeasSample = np.full(measNrSum, -1, dtype=np.int64)
         self.localTime = np.full(measNrSum, np.nan)
 
-        # WGS-84 geodetic and legacy ED50/UTM coordinates.
+        # WGS-84 geodetic and ED50/UTM coordinates.
         self.latitude  = np.full(measNrSum, np.nan)
         self.longitude = np.full(measNrSum, np.nan)
         self.height    = np.full(measNrSum, np.nan)
@@ -652,8 +651,7 @@ class NavigationEngine:
         # TOD of the first valid message [s]; infinity indicates no detection.
         TOD = np.full(settings.numberOfChannels, np.inf)
 
-        #--- Make a list excluding channels not in tracking lock ----------
-        # Make a list containing only channels that remain in tracking lock.
+        #--- Select channels that completed tracking ---------------------
         activeChnList = [
             channelNr for channelNr, channel in enumerate(trackResults)
             if channel.lockFlag ]
@@ -731,7 +729,7 @@ class NavigationEngine:
         # advanced by the navigation-solution interval.
         localTime = None
 
-        # Preallocate results in MATLAB's channel-by-epoch orientation.
+        # Allocate channel-by-epoch navigation results.
         self.navSolutions = NavSolutions(settings.numberOfChannels, measNrSum)
         navSolutions = self.navSolutions
 
@@ -806,8 +804,8 @@ class NavigationEngine:
                 navSolutions.X[currMeasNr] = xyzdt[0]
                 navSolutions.Y[currMeasNr] = xyzdt[1]
                 navSolutions.Z[currMeasNr] = xyzdt[2]
-                # As in MATLAB, store zero clock bias for the first solution;
-                # subsequent values are the estimated range-form bias [m].
+                # Store zero clock bias for the first solution; subsequent
+                # values are the estimated range-form bias [m].
                 navSolutions.dt[currMeasNr] = (
                     0 if currMeasNr == 0 else xyzdt[3])
 
@@ -836,7 +834,7 @@ class NavigationEngine:
                     xyzdt[0], xyzdt[1], xyzdt[2], 5)
 
                 #=== Convert to the UTM coordinate system =====================
-                # Convert ECEF to the legacy ED50/UTM coordinates.
+                # Convert ECEF to ED50/UTM coordinates.
                 # Select the UTM longitudinal zone.
                 navSolutions.utmZone = findUtmZone(
                     navSolutions.latitude[currMeasNr], navSolutions.longitude[currMeasNr])
@@ -844,8 +842,7 @@ class NavigationEngine:
                 (navSolutions.E[currMeasNr],navSolutions.N[currMeasNr],
                  navSolutions.U[currMeasNr]) = cart2utm(xyzdt[0], xyzdt[1],
                                                 xyzdt[2],navSolutions.utmZone)
-                # E, N and U contain the receiver position in the local
-                # east, north and up coordinate directions.
+                # E/N are UTM easting/northing; U is ellipsoidal height [m].
             else:
                 #--- Not enough satellites to find a 3-D position -------------
                 # There are not enough satellites for a 3-D position. Result
@@ -853,14 +850,9 @@ class NavigationEngine:
                 print(f"   Measurement No. {currMeasNr+1}: Not enough "
                       "information for position solution.")
 
-                # Missing solutions retain NaN and are automatically omitted
-                # from the plots. DOP retains zeros because that is more
-                # convenient for plotting; later processing must exclude NaN
-                # values when computing statistics.
+                # Unavailable coordinates remain NaN; DOP remains zero.
 
-                # Known MATLAB limitation: positions/elevations of masked
-                # satellites are not updated, so a rising satellite cannot
-                # re-enter after it has been excluded by the elevation mask.
+                # Excluded satellites are not reconsidered at later epochs.
 
             # === Update local time by one measurement step ===================
             # Advance receiver time by one navigation-solution interval.
@@ -906,8 +898,6 @@ class NavigationEngine:
             refU = settings.truePositionU
             refPointText = "Reference position"
 
-        # Figure 300 follows MATLAB and avoids overwriting auto-numbered user
-        # figures when navigation plots are closed and reopened.
         #=== Select or create and clear the figure ============================
         figure = plt.figure(300, figsize=(12, 8), clear=True)
         figure.canvas.manager.set_window_title("Navigation solutions")
@@ -921,7 +911,7 @@ class NavigationEngine:
 
         #%% Plot all figures
         #--- Coordinate differences in the UTM system -------------------------
-        # Coordinate variations in the legacy UTM system.
+        # Coordinate variations in the ED50/UTM system.
         coordinateAxes.plot(navSolutions.E-refE, label="E")
         coordinateAxes.plot(navSolutions.N-refN, label="N")
         coordinateAxes.plot(navSolutions.U-refU, label="U")
@@ -933,7 +923,7 @@ class NavigationEngine:
         coordinateAxes.grid(True)
 
         #--- Position plot in the UTM system ----------------------------------
-        # Horizontal position offsets in the legacy UTM system.
+        # Horizontal position offsets in the ED50/UTM system.
         positionAxes.plot(navSolutions.E-refE, navSolutions.N-refN, "+",
                           label="Measurements")
         # Plot the reference point at the origin of the offset coordinates.
@@ -947,8 +937,7 @@ class NavigationEngine:
         positionAxes.legend()
 
         #--- Satellite sky plot -----------------------------------------------
-        # Satellite sky plot. The utility follows MATLAB's
-        # satellite-by-epoch layout and spherical elevation mapping.
+        # Azimuth and elevation arrays are arranged by satellite and epoch.
         skyPlot(skyAxes, navSolutions.az, navSolutions.el,
                 navSolutions.K[:, 0])
         skyAxes.set_title(

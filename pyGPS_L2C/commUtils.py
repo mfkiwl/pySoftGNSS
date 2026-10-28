@@ -197,15 +197,17 @@ def calcCNoPld(chResults, settings, loopCnt):
     pllDetector[0] = NBD / NBP
 
     #--- CL pilot-channel estimates --------------------------------------
-    Q_P = chResults.Pilot_I_P[firstIndex:lastIndex]
-    I_P = chResults.Pilot_Q_P[firstIndex:lastIndex]
-    pilotCNo = 10 ** (CNoVSM(I_P, Q_P, T) / 10)
-    CNo[1] = 10 * np.log10(pilotCNo)
-    NBP = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
-           + np.sum(Q_P) ** 2)
-    NBD = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
-           - np.sum(Q_P) ** 2)
-    pllDetector[1] = NBD / NBP
+    pilotCNo = 0
+    if settings.pilotTRKflag == 1:
+        Q_P = chResults.Pilot_I_P[firstIndex:lastIndex]
+        I_P = chResults.Pilot_Q_P[firstIndex:lastIndex]
+        pilotCNo = 10 ** (CNoVSM(I_P, Q_P, T) / 10)
+        CNo[1] = 10 * np.log10(pilotCNo)
+        NBP = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
+               + np.sum(Q_P) ** 2)
+        NBD = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
+               - np.sum(Q_P) ** 2)
+        pllDetector[1] = NBD / NBP
 
     #--- Combined L2C estimate -------------------------------------------
     CNo[2] = 10 * np.log10(dataCNo + pilotCNo)
@@ -339,7 +341,7 @@ def calculatePseudoranges(trackResults, subFrameStart, TOW, currMeasSample,
         settings      - object
                       Receiver settings.
         searchIndex   - numpy.ndarray
-                      Per-channel search positions used by the Python port.
+                      Cached per-channel search positions, updated in place.
     Returns
     -------
         pseudoranges  - numpy.ndarray
@@ -670,7 +672,8 @@ def leastSquarePos(satpos, obs, settings):
     Returns
     -------
         pos         - numpy.ndarray
-                    Receiver ECEF position and clock error ``[X, Y, Z, dt]``.
+                    Receiver ECEF position and clock bias ``[X, Y, Z, dt]``,
+                    all in metres.
         el          - numpy.ndarray
                     Satellite elevation angles in degrees.
         az          - numpy.ndarray
@@ -937,7 +940,7 @@ def cart2utm(X, Y, Z, zone):
         N           - float
                     UTM northing.
         U           - float
-                    UTM up coordinate.
+                    ED50 ellipsoidal height in metres, not local ENU up.
     """
     from math import atan2, atanh
 

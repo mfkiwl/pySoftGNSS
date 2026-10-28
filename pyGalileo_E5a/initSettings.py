@@ -52,9 +52,8 @@ class Settings(object):
         self.numberOfChannels    = 12
         # Move the starting point of processing. Can be used to start the
         # signal processing at any point in the data record (e.g. for long
-        # records). fseek function is used to move the file read point,
-        # therefore the offset is expressed in logical time samples, not
-        # directly in bytes. I/Q files contain two scalar values per sample.
+        # records). The file offset is expressed in logical samples, not
+        # bytes. I/Q files contain two scalar values per sample.
         self.skipNumberOfSamples        = 0
 
         #%% Raw signal file name and related parameters =======================
@@ -368,7 +367,7 @@ class Settings(object):
             print('Tracking started at ',startTime.strftime("%Y-%m-%d %H:%M:%S"))
 
             # Run channel-serial or channel-parallel tracking according to
-            # trkMode. The tracking results are retained by the engine.
+            # trkMode. Results are stored in trackingEngine.trackResults.
             import tracking
             trackingEngine = tracking.TrackingEngine(self)
             trackingEngine.trackingRun(acqResults)

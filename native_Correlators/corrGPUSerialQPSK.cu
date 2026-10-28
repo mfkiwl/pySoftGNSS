@@ -1,13 +1,12 @@
 ﻿/*================================================================================
  * Filename: corrGPUSerialQPSK.cu
  * Description: GPU-assisted single-channel QPSK tracking correlator exposed
- *              through a small C ABI for Python ctypes.
+ *              through a C interface for Python ctypes.
  *
  * Authors: Yafeng Li (School of Automation, Beijing Information Science and Technology University)
  * Time: Apr, 21, 2026
  *
- * The core processing stages are intentionally kept aligned with the
- * GPU channel-parallel correlator:
+ * Processing stages:
  *   1) mixCarrReal() / mixCarrComplex()
  *   2) correlator()
  *
@@ -36,7 +35,7 @@
 
 /* Settings struct -------------------------------------------------------------
  * fileType       : 1 - real samples; 2 - complex samples
- * earlyLateSpc   : half of the early - late code correlation spacing (chips)
+ * earlyLateSpc   : half of the early-late spacing in code-table points
  *------------------------------------------------------------------------------*/
 typedef struct {
     int fileType;
@@ -73,10 +72,10 @@ struct GPU_Complex
     float i;
     __host__ __device__ GPU_Complex() : r(0.0f), i(0.0f) {}
 
-    // Constructor for a complex number with real amd imag parts of float
+    // Constructor for a complex number with float real and imaginary parts
     __host__ __device__ GPU_Complex(float realPart, float imagPart) : r(realPart), i(imagPart) {}
 
-    // Magnitude of a complex number
+    // Squared magnitude of a complex number
     __host__ __device__ float magnitude2() { return r * r + i * i; }
 
     __device__ GPU_Complex operator*(const GPU_Complex& a) {
@@ -124,11 +123,11 @@ struct GPU_Complex
  *------------------------------------------------------------------------------*/
 __global__ void mixCarrReal(const short*, GPU_Complex*, int, float, float);
 __global__ void mixCarrComplex(const short*, GPU_Complex*, int, float, float);
-__global__ void correlator(GPU_Complex*, GPU_Complex*, const signed char* __restrict__, float, int, float, int, int);
+__global__ void correlator(GPU_Complex*, GPU_Complex*, const float* __restrict__, float, int, float, int, int);
 void cleanup(void);
 
 static int checkInputs(int fileType, int rawSignalLenIn,
-    const short* rawSignal, const signed char* caCode, int codeLen);
+    const short* rawSignal, const float* caCode, int codeLen);
 
 /* Persistent state -------------------------------------------------------------
  * d_pRawSignal     : device buffer for one IF signal block (int16 samples)
@@ -141,7 +140,7 @@ static int checkInputs(int fileType, int rawSignalLenIn,
  * initialized      : first-call allocation flag
  *------------------------------------------------------------------------------*/
 static short* d_pRawSignal = NULL;
-static signed char* d_caCode = NULL;
+static float* d_caCode = NULL;
 static GPU_Complex* d_BasebandSignal = NULL;
 static std::complex<float>* h_corrValues = NULL;
 static GPU_Complex* d_corrValues = NULL;
@@ -153,16 +152,16 @@ __constant__ float d_initCodePhase[CORR_NUMBER];
 /* Python ctypes entry point ---------------------------------------------------
  * Args   : fileType       I   1 - real samples; 2 - interleaved I/Q samples
  *          rawSignalLenIn I   number of int16 elements in rawSignal
- *          earlyLateSpc   I   half early-late spacing (chips)
+ *          earlyLateSpc   I   half early-late spacing (code-table points)
  *          rawSignal      I   int16 IF samples
- *          caCode         I   int8 guarded [dataCode pilotCode]
+ *          caCode         I   float32 guarded [dataCode pilotCode]
  *          codeLen        I   number of elements in one guarded code branch
  *          phase values   I   carrier/code phase and step values
  *          inPRN          I   current satellite PRN for device-code caching
  * Return : pointer to static 12-value data/pilot E/P/L I/Q array.
  *------------------------------------------------------------------------------*/
 DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenIn, double earlyLateSpc,
-    short* rawSignal, signed char* caCode, int codeLen,
+    short* rawSignal, float* caCode, int codeLen,
     double remCarrPhase, double carrPhaseStep, double remCodePhase,
     double codePhaseStep, int inPRN)
 {
@@ -175,9 +174,7 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenIn, double earlyLate
 
     if (!initialized)
     {
-        /* Validate the C ABI before persistent buffers are allocated. Keep this
-           check in the first-time initialization path so later calls stay on
-           the existing fast path. */
+        /* Validate inputs before allocating persistent buffers on the first call. */
         if (!checkInputs(fileType, rawSignalLenIn, rawSignal, caCode, codeLen)) {
             return NULL;
         }
@@ -187,7 +184,7 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenIn, double earlyLate
         settings.earlyLateSpc = earlyLateSpc;
 
         /* --------------- Find array dimensions ---------------
-         * codeLen      : number of chips in one guarded code branch
+         * codeLen      : number of code-table points in one guarded code branch
          * rawSignalLen : number of int16 entries in the input signal block
          * blksize      : number of real or complex samples processed by the kernels
          *------------------------------------------------------ */
@@ -204,8 +201,8 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenIn, double earlyLate
 
         /* -------------------- Device-side memory -------------------- */
         CUDA_CHECK(cudaMalloc(&d_pRawSignal, rawSignalLen * sizeof(short)));
-        CUDA_CHECK(cudaMalloc(&d_caCode, 2 * codeLen * sizeof(signed char)));
-        CUDA_CHECK(cudaMemcpy(d_caCode, caCode, 2 * codeLen * sizeof(signed char),
+        CUDA_CHECK(cudaMalloc(&d_caCode, 2 * codeLen * sizeof(float)));
+        CUDA_CHECK(cudaMemcpy(d_caCode, caCode, 2 * codeLen * sizeof(float),
             cudaMemcpyHostToDevice));
         PRN = inPRN;
         CUDA_CHECK(cudaMalloc(&d_BasebandSignal, (blksize + 100) * sizeof(GPU_Complex)));
@@ -214,7 +211,7 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenIn, double earlyLate
         blockPerGrid = (blksize + 100 + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 
         /* The combined QPSK code table is arranged as:
-             [dataCode(last,1..N,first), pilotCode(last,1..N,first)].
+             [guarded dataCode, guarded pilotCode].
            Keep only the Early/Prompt/Late offset here. MATLAB uses
            ceil(codePhase +/- earlyLateSpc) + 1 on the guarded code table; the
            CUDA kernel below implements the equivalent 0-based ceil index. The
@@ -250,7 +247,7 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenIn, double earlyLate
      * Reuse the device-side code table until the tracked PRN changes.
      *-------------------------------------------------------- */
     if (PRN != inPRN) {
-        CUDA_CHECK(cudaMemcpy(d_caCode, caCode, 2 * codeLen * sizeof(signed char),
+        CUDA_CHECK(cudaMemcpy(d_caCode, caCode, 2 * codeLen * sizeof(float),
             cudaMemcpyHostToDevice));
         PRN = inPRN;
     }
@@ -312,7 +309,7 @@ DLL_EXPORT void corrEngineFree(void)
  */
 __global__ void mixCarrReal(const short* d_pRawSignal, GPU_Complex* d_BasebandSignal, int blksize, float remCarrPhase, float carrPhaseStep)
 {
-    // CUDA version of floating point NCO and vector dot product integrated
+    // Generate the carrier replica and wipe off the carrier.
 
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < blksize; index += blockDim.x * gridDim.x) {
         float sin, cos;
@@ -330,7 +327,7 @@ __global__ void mixCarrReal(const short* d_pRawSignal, GPU_Complex* d_BasebandSi
 __global__ void mixCarrComplex(const short* d_pRawSignal, GPU_Complex* d_BasebandSignal,
     int blksize, float remCarrPhase, float carrPhaseStep)
 {
-    // CUDA version of floating point NCO and vector dot product integrated
+    // Generate the carrier replica and wipe off the carrier.
     const short2* d_pRawSignalIQ = reinterpret_cast<const short2*>(d_pRawSignal);
     for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < blksize; index += blockDim.x * gridDim.x) {
         float sin, cos;
@@ -353,7 +350,7 @@ __global__ void mixCarrComplex(const short* d_pRawSignal, GPU_Complex* d_Baseban
  * Each thread accumulates a strided partial sum, then a shared-memory tree reduction
  * combines them to obtain one complex correlation value per branch.
  */
-__global__ void correlator(GPU_Complex* d_corrValues, GPU_Complex* d_BasebandSignal, const signed char* __restrict__ d_caCodeTable,
+__global__ void correlator(GPU_Complex* d_corrValues, GPU_Complex* d_BasebandSignal, const float* __restrict__ d_caCodeTable,
     float codePhaseStep, int codePhaseBase, float remCodePhase, int blksize, int codeLen)
 {
     /* Each block computes one QPSK correlator branch:
@@ -376,7 +373,7 @@ __global__ void correlator(GPU_Complex* d_corrValues, GPU_Complex* d_BasebandSig
                 int chipIndex = branchOffset + codePhaseBase + __float2int_ru(localPhase);
 
                 // 2.correlate
-                sumIQ.multiply_acc(d_BasebandSignal[pos], (float)__ldg(&d_caCodeTable[chipIndex]));
+                sumIQ.multiply_acc(d_BasebandSignal[pos], __ldg(&d_caCodeTable[chipIndex]));
             }
             accumResult[iAccum] = sumIQ;
         }    //for (int iAccum = threadIdx.x; iAccum < ACCUM_N; iAccum += blockDim.x)
@@ -403,7 +400,7 @@ __global__ void correlator(GPU_Complex* d_corrValues, GPU_Complex* d_BasebandSig
  * Return : 1 for valid input; 0 otherwise
  *------------------------------------------------------------------------------*/
 static int checkInputs(int fileType, int rawSignalLenIn,
-    const short* rawSignal, const signed char* caCode, int codeLen)
+    const short* rawSignal, const float* caCode, int codeLen)
 {
     if (rawSignal == NULL || caCode == NULL || rawSignalLenIn <= 0 ||
         codeLen <= 0 || (fileType != 1 && fileType != 2)) {

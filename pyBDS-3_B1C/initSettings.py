@@ -380,7 +380,7 @@ class Settings(object):
             print('Tracking started at ',startTime.strftime("%Y-%m-%d %H:%M:%S"))
 
             # Run channel-serial or channel-parallel tracking according to
-            # trkMode. The tracking results are retained by the engine.
+            # trkMode; results are stored in trackingEngine.trackResults.
             import tracking
             trackingEngine = tracking.TrackingEngine(self)
             trackingEngine.trackingRun(acqResults)

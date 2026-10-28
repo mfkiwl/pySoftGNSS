@@ -71,7 +71,7 @@ class Settings(object):
         self.samplingFreq       = 30.e6           # [Hz]
 
         #%% Code parameter settings ==========================================
-        # Equivalent CM + L2OCp overlay code over one 20 ms period.
+        # L2OCp primary-code length on the equivalent TDM grid (20 ms).
         self.codeLength         = 10230 * 2
         self.codeFreqBasis      = 0.5115e6 * 2    # [Hz]
         self.L2OCFineFactor     = 2
@@ -317,9 +317,8 @@ class Settings(object):
         data file. The code and carrier of each acquired signal are then
         tracked and their coherent-integration results are stored.
         This receiver tracks the L2OCp pilot without decoding L2 CSI messages.
-        Post-navigation records the locked satellites and placeholder
-        ephemeris entries; pseudoranges and receiver positions are not
-        calculated.
+        Post-navigation records the tracked satellites without decoded
+        ephemerides; pseudoranges and receiver positions are not calculated.
 
         The processing sequence is:
 
@@ -366,8 +365,7 @@ class Settings(object):
             startTime = datetime.datetime.now()
             print('Tracking started at ',startTime.strftime("%Y-%m-%d %H:%M:%S"))
 
-            # Run channel-serial or channel-parallel tracking according to
-            # trkMode. The tracking results are retained by the engine.
+            # Run channel-serial or channel-parallel tracking.
             import tracking
             trackingEngine = tracking.TrackingEngine(self)
             trackingEngine.trackingRun(acqResults)
@@ -397,11 +395,11 @@ class Settings(object):
             navigationEngine.navigationRun(trackResults)
             navSolutions = navigationEngine.navSolutions
             eph = navigationEngine.eph
-            # Save the tracking-only status and placeholder ephemeris entries.
+            # Save tracking status; no ephemerides have been decoded.
             with open(self.navPklName,"wb") as fp:
                 pickle.dump((navSolutions,eph),fp)
         else:
-            # Restore the tracking-only status and placeholder ephemeris entries.
+            # Restore the saved tracking status.
             with open(self.navPklName,"rb") as fp:
                 navSolutions, eph = pickle.load(fp)
             # Attach the restored results to the post-navigation engine.

@@ -74,22 +74,26 @@ class AcqEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
     #%% Acquisition engine using CPU
     def acqProcessCPU(self):
-        """Perform cold-start GPS L1C acquisition on the raw-signal file.
+        """Perform cold-start GPS L1C acquisition on the CPU using NumPy.
 
         The function searches for GPS L1C signals of all satellites listed
         in ``settings.acqSatelliteList`` and saves the code phase and frequency
         of each detected signal in the acquisition results.
+
+        With ``pilotACQflag`` enabled, combine data/pilot magnitudes with
+        weights 1:3 and use the pilot for fine acquisition. Otherwise use
+        the data component for both coarse and fine acquisition.
 
         Returns
         -------
@@ -110,9 +114,7 @@ class AcqEngine():
         samplesPerChip = round(settings.samplingFreq / settings.codeFreqBasis)
 
         with open(settings.fileName, "rb") as fid:
-            # Move the starting point of processing. Can be used to start the
-            # signal processing at any point in the data record (e.g. good for
-            # long records or for signal processing in blocks).
+            # Convert the logical-sample offset to the file byte offset.
             if settings.dataType == "int16":
                 fid.seek(settings.dataAdaptCoeff * settings.skipNumberOfSamples * 2)
             elif settings.dataType == "int8":
@@ -123,8 +125,7 @@ class AcqEngine():
             longSignal = np.fromfile(fid,settings.dataType,
                          settings.dataAdaptCoeff * 21 * samplesPerCode)
 
-        # Remove the scalar-stream mean and convert interleaved I/Q samples
-        # into a complex signal, as in acquisitionCPU.m.
+        # Remove the scalar-stream mean and combine interleaved I/Q samples.
         if settings.fileType == 2:
             longSignal = longSignal - np.mean(longSignal)
             longSignal = longSignal[::2] + 1j * longSignal[1::2]
@@ -145,8 +146,8 @@ class AcqEngine():
                                  settings.acqSearchStep) + 1
 
         #--- Variables for fine acquisition -------------------------------
-        # Code resampling index on the 12-sample-per-chip TMBOC grid.
-        # It maps each input sample to the corresponding local code chip.
+        # Code resampling index on the 12-point-per-primary-chip code-table grid.
+        # It maps each input sample to the corresponding local-code grid point.
         codeValueIndex = (np.arange(20 * samplesPerCode, dtype=np.float64) * ts
                           * settings.codeFreqBasis * 12).astype(np.int32)
         codeValueIndex %= settings.codeLength * 12
@@ -156,31 +157,32 @@ class AcqEngine():
         finePhasePoints = (
             np.arange(20 * samplesPerCode, dtype=np.float64) * 2 * np.pi * ts)
 
-        # Reuse the zero-padded data and pilot buffers for every PRN.
+        # Reuse zero-padded local-code buffers across PRNs.
         localData = np.zeros(samplesPerCode * 2, dtype=np.float64)
-        localPilot = np.zeros(samplesPerCode * 2, dtype=np.float64)
+        if settings.pilotACQflag:
+            localPilot = np.zeros(samplesPerCode * 2, dtype=np.float64)
 
         # Perform search for all listed PRN numbers.
         print("   (", end="", flush=True)
 
         #%% Coarse acquisition =============================================
         for PRN in settings.acqSatelliteList:
-            # Generate sampled L1C data and pilot waveforms.
+            # Generate the sampled L1C data waveform.
             DataPriTable = correlator.codeSampling(
                 settings, PRN, samplesPerCode, "data")
             # Copy one code period into the reusable zero-padded replica.
             localData[:samplesPerCode] = DataPriTable[:samplesPerCode]
 
-            #--- Perform DFT of L1C data and pilot waveforms ---------------
+            #--- Perform DFT of the local-code replicas -------------------
             # Conjugated data-code spectrum for frequency-domain correlation.
             DataPriFreqDom = np.conjugate(fft.fft(localData))
 
-            # Generate the pilot replica so that its power can be combined
-            # with the L1C data-channel correlation.
-            PilotPriTable = correlator.codeSampling(
-                settings, PRN, samplesPerCode, "pilot")
-            localPilot[:samplesPerCode] = PilotPriTable[:samplesPerCode]
-            PilotPriFreqDom = np.conjugate(fft.fft(localPilot))
+            # Generate the pilot replica for joint data/pilot acquisition.
+            if settings.pilotACQflag:
+                PilotPriTable = correlator.codeSampling(
+                    settings, PRN, samplesPerCode, "pilot")
+                localPilot[:samplesPerCode] = PilotPriTable[:samplesPerCode]
+                PilotPriFreqDom = np.conjugate(fft.fft(localPilot))
 
             # Initialize the global peak retained across frequency bins.
             codePhaseMax, freqMax, peakMax = 0, 0, 0
@@ -195,8 +197,12 @@ class AcqEngine():
                 signal = longSignal[:2 * samplesPerCode]
                 IQfreqDom = fft.fft(sigCarr * signal)
                 dataResults = np.abs(fft.ifft(IQfreqDom * DataPriFreqDom))
-                pilotResults = np.abs(fft.ifft(IQfreqDom * PilotPriFreqDom))
-                results = (dataResults + pilotResults * 3) / 4
+                # Non-coherently combine data/pilot magnitudes with weights 1:3.
+                if settings.pilotACQflag:
+                    pilotResults = np.abs(fft.ifft(IQfreqDom * PilotPriFreqDom))
+                    results = (dataResults + pilotResults * 3) / 4
+                else:
+                    results = dataResults
 
                 #--- Look for correlation peaks ---------------------------
                 # Find the maximum correlation peak and its code phase.
@@ -207,13 +213,13 @@ class AcqEngine():
                     codePhaseMax = maxIndexTemp
                     freqMax = coarseFreqBin
 
-            #--- Find a one-chip-wide exclusion range around the peak -----
+            #--- Exclude one primary-code chip on each side of the peak ---
             # Find the L1C code-phase exclusion range around the global peak.
             excludeIndex1 = codePhaseMax - samplesPerChip
             excludeIndex2 = codePhaseMax + samplesPerChip
 
             #--- Correct the exclusion range at array boundaries ----------
-            # Wrap the retained range when the one-chip exclusion interval
+            # Wrap the retained range when the exclusion interval
             # crosses either boundary of the correlation array.
             if excludeIndex1 < 0:
                 codePhaseRange = np.arange(excludeIndex2,
@@ -230,7 +236,7 @@ class AcqEngine():
             secondPeak = float(np.max(results[codePhaseRange]))
             # Save code-phase acquisition result.
             self.codePhase[PRN - 1] = codePhaseMax
-            # Store the GLRT statistic.
+            # Store the primary-to-secondary correlation-peak ratio.
             self.peakMetric[PRN - 1] = peakMax / secondPeak
             # Store the searched PRN.
             self.PRN[PRN - 1] = PRN
@@ -240,7 +246,7 @@ class AcqEngine():
             if codePhaseMax + 20 * samplesPerCode > longSignal.size:
                 codePhaseMax -= samplesPerCode
 
-            # A GLRT statistic above the threshold indicates that the L1C
+            # A peak ratio above the threshold indicates that the L1C
             # signal has been found.
             if self.peakMetric[PRN - 1] > settings.acqThreshold:
                 #%% Fine resolution frequency search ======================
@@ -249,17 +255,21 @@ class AcqEngine():
                 print(f"{PRN:02d} ", end="", flush=True)
 
                 #--- Prepare 200 ms code, carrier and input signals --------
-                # Generate and resample the L1C pilot TMBOC waveform.
-                L1CPilotCode = correlator.generatePilotTMBOC61(settings, PRN)
-                L1CPilotCode200ms = L1CPilotCode[codeValueIndex]
+                # Select the local code on the 12-point-per-primary-chip grid.
+                # Pilot acquisition uses the BOC(1,1) component in either band mode.
+                if settings.pilotACQflag:
+                    L1CCode = correlator.generatePilotTMBOC61(settings, PRN, 'BOC11')
+                else:
+                    L1CCode = correlator.generateDataBOC11(PRN)
+                L1CCode200ms = L1CCode[codeValueIndex]
                 sig200ms = longSignal[
                     codePhaseMax:codePhaseMax + 20 * samplesPerCode]
                 # Coarse-frequency local carrier before the fine estimate.
                 localCarr200cm = np.exp(-1j * freqMax * finePhasePoints)
 
                 #--- Integration for each 1 ms segment over 200 ms ---------
-                # Wipe off pilot code/carrier and integrate every 1 ms.
-                basebandSig = sig200ms * L1CPilotCode200ms * localCarr200cm
+                # Wipe off the selected local code/carrier and integrate every 1 ms.
+                basebandSig = sig200ms * L1CCode200ms * localCarr200cm
                 sumPerCode = basebandSig.reshape((200, -1)).sum(axis=1)
 
                 #--- Find the fine carrier frequency ----------------------
@@ -289,11 +299,15 @@ class AcqEngine():
 
     #%% Acquisition engine using GPU
     def acqProcessGPU(self):
-        """Perform cold-start GPS L1C acquisition on the raw-signal file.
+        """Perform cold-start GPS L1C acquisition on the GPU using CuPy.
 
         The function searches for GPS L1C signals of all satellites listed
         in ``settings.acqSatelliteList`` and saves the code phase and frequency
         of each detected signal in the acquisition results.
+
+        With ``pilotACQflag`` enabled, combine data/pilot magnitudes with
+        weights 1:3 and use the pilot for fine acquisition. Otherwise use
+        the data component for both coarse and fine acquisition.
 
         Returns
         -------
@@ -307,8 +321,7 @@ class AcqEngine():
         from cupyx.scipy import fft as fftBackend
 
         settings = self._settings
-        # Match the GPU acquisition architecture: bulk array processing uses
-        # single precision on the device.
+        # Process signal arrays in single precision on the GPU.
         realDataType = xp.float32
         complexDataType = xp.complex64
 
@@ -355,7 +368,7 @@ class AcqEngine():
                                  settings.acqSearchStep) + 1
 
         #--- Variables for fine acquisition -------------------------------
-        # Code resampling index on the 12-sample-per-chip TMBOC grid.
+        # Code resampling index on the 12-point-per-primary-chip code-table grid.
         # Calculate it on the host in float64: float32 can change chip indices
         # close to integer boundaries.
         codeValueIndex = (np.arange(20 * samplesPerCode, dtype=np.float64) * ts
@@ -369,32 +382,33 @@ class AcqEngine():
         finePhasePoints = xp.arange(samplesPer1ms, dtype=realDataType)
         finePhasePoints *= realDataType(2 * np.pi * ts)
 
-        # Reuse zero-padded data and pilot buffers for every PRN.
+        # Reuse zero-padded local-code buffers across PRNs.
         localData = xp.zeros(samplesPerCode * 2, dtype=realDataType)
-        localPilot = xp.zeros(samplesPerCode * 2, dtype=realDataType)
+        if settings.pilotACQflag:
+            localPilot = xp.zeros(samplesPerCode * 2, dtype=realDataType)
 
         # Perform search for all listed PRN numbers.
         print("   (", end="", flush=True)
 
         #%% Coarse acquisition =============================================
         for PRN in settings.acqSatelliteList:
-            # Generate sampled L1C data and pilot waveforms.
+            # Generate the sampled L1C data waveform.
             DataPriTable = correlator.codeSampling(
                 settings, PRN, samplesPerCode, "data")
             localData[:samplesPerCode] = xp.asarray(
                 DataPriTable[:samplesPerCode], dtype=realDataType)
 
-            #--- Perform DFT of L1C data and pilot waveforms ---------------
+            #--- Perform DFT of the local-code replicas -------------------
             # Conjugated data-code spectrum for frequency-domain correlation.
             DataPriFreqDom = xp.conjugate(fftBackend.fft(localData))
 
-            # Generate the pilot replica so that its power can be combined
-            # with the L1C data-channel correlation.
-            PilotPriTable = correlator.codeSampling(
-                settings, PRN, samplesPerCode, "pilot")
-            localPilot[:samplesPerCode] = xp.asarray(
-                PilotPriTable[:samplesPerCode], dtype=realDataType)
-            PilotPriFreqDom = xp.conjugate(fftBackend.fft(localPilot))
+            # Generate the pilot replica for joint data/pilot acquisition.
+            if settings.pilotACQflag:
+                PilotPriTable = correlator.codeSampling(
+                    settings, PRN, samplesPerCode, "pilot")
+                localPilot[:samplesPerCode] = xp.asarray(
+                    PilotPriTable[:samplesPerCode], dtype=realDataType)
+                PilotPriFreqDom = xp.conjugate(fftBackend.fft(localPilot))
 
             # Initialize the global peak retained across frequency bins.
             codePhaseMax, freqMax, peakMax = 0, 0, 0
@@ -412,9 +426,13 @@ class AcqEngine():
                 IQfreqDom = fftBackend.fft(sigCarr * signal)
                 dataResults = xp.abs(
                     fftBackend.ifft(IQfreqDom * DataPriFreqDom))
-                pilotResults = xp.abs(
-                    fftBackend.ifft(IQfreqDom * PilotPriFreqDom))
-                results = (dataResults + pilotResults * 3) / 4
+                # Non-coherently combine data/pilot magnitudes with weights 1:3.
+                if settings.pilotACQflag:
+                    pilotResults = xp.abs(
+                        fftBackend.ifft(IQfreqDom * PilotPriFreqDom))
+                    results = (dataResults + pilotResults * 3) / 4
+                else:
+                    results = dataResults
 
                 #--- Look for correlation peaks ---------------------------
                 # Find the maximum correlation peak and its code phase.
@@ -426,13 +444,13 @@ class AcqEngine():
                     codePhaseMax = xp.argmax(results).item()
                     freqMax = coarseFreqBin
 
-            #--- Find a one-chip-wide exclusion range around the peak -----
+            #--- Exclude one primary-code chip on each side of the peak ---
             # Find the L1C code-phase exclusion range around the global peak.
             excludeIndex1 = codePhaseMax - samplesPerChip
             excludeIndex2 = codePhaseMax + samplesPerChip
 
             #--- Correct the exclusion range at array boundaries ----------
-            # Wrap the retained range when the one-chip exclusion interval
+            # Wrap the retained range when the exclusion interval
             # crosses either boundary of the correlation array.
             if excludeIndex1 < 0:
                 codePhaseRange = xp.arange(excludeIndex2,
@@ -449,7 +467,7 @@ class AcqEngine():
             secondPeak = xp.max(results[codePhaseRange]).item()
             # Save code-phase acquisition result.
             self.codePhase[PRN - 1] = codePhaseMax
-            # Store the GLRT statistic.
+            # Store the primary-to-secondary correlation-peak ratio.
             self.peakMetric[PRN - 1] = peakMax / secondPeak
             # Store the searched PRN.
             self.PRN[PRN - 1] = PRN
@@ -459,7 +477,7 @@ class AcqEngine():
             if codePhaseMax + 20 * samplesPerCode > longSignal.size:
                 codePhaseMax -= samplesPerCode
 
-            # A GLRT statistic above the threshold indicates that the L1C
+            # A peak ratio above the threshold indicates that the L1C
             # signal has been found.
             if self.peakMetric[PRN - 1] > settings.acqThreshold:
                 #%% Fine resolution frequency search ======================
@@ -468,11 +486,16 @@ class AcqEngine():
                 print(f"{PRN:02d} ", end="", flush=True)
 
                 #--- Prepare 200 ms code, carrier and input signals --------
-                # Generate and resample the L1C pilot TMBOC waveform.
-                L1CPilotCode = xp.asarray(
-                    correlator.generatePilotTMBOC61(settings, PRN),
-                    dtype=realDataType)
-                L1CPilotCode200ms = L1CPilotCode[codeValueIndex]
+                # Select the local code on the 12-point-per-primary-chip grid.
+                # Pilot acquisition uses the BOC(1,1) component in either band mode.
+                if settings.pilotACQflag:
+                    L1CCode = xp.asarray(
+                        correlator.generatePilotTMBOC61(settings, PRN, 'BOC11'),
+                        dtype=realDataType)
+                else:
+                    L1CCode = xp.asarray(
+                        correlator.generateDataBOC11(PRN), dtype=realDataType)
+                L1CCode200ms = L1CCode[codeValueIndex]
                 sig200ms = longSignal[
                     codePhaseMax:codePhaseMax + 20 * samplesPerCode]
                 
@@ -491,13 +514,13 @@ class AcqEngine():
                 initialCarr = xp.asarray(
                     np.exp(-1j * initialPhase), dtype=complexDataType)
 
-                # Wipe off pilot code and the reusable 1 ms carrier in a
-                # two-dimensional operation, then restore each start phase.
+                # Wipe off the selected local code and 1 ms carrier, then
+                # restore each segment's starting carrier phase.
                 sig200ms = sig200ms.reshape((200, samplesPer1ms))
-                L1CPilotCode200ms = L1CPilotCode200ms.reshape(
+                L1CCode200ms = L1CCode200ms.reshape(
                     (200, samplesPer1ms))
                 sumPerCode = xp.sum(
-                    sig200ms * L1CPilotCode200ms * localCarr1ms, axis=1)
+                    sig200ms * L1CCode200ms * localCarr1ms, axis=1)
                 sumPerCode *= initialCarr
 
                 #--- Find the fine carrier frequency ----------------------
@@ -562,9 +585,7 @@ class AcqEngine():
     def preRun(self):
         """Prepare tracking-channel priority from the acquisition results.
 
-        The acquired signals are sorted according to signal strength. This
-        function can be modified to use another satellite-selection algorithm
-        or to introduce acquired-signal property offsets for testing.
+        The results are sorted by decreasing correlation-peak ratio.
 
         Returns
         -------
@@ -572,7 +593,7 @@ class AcqEngine():
                 Acquisition-result arrays are reordered in place.
         """
         #--- Sort peaks and retain their index information ----------------
-        # Sort peaks to find the strongest signals and retain their indices.
+        # Sort peak ratios in descending order and retain their indices.
         PRNindexes = self.peakMetric.argsort()[::-1]
         self.peakMetric = self.peakMetric.take(PRNindexes)
         self.carrFreq = self.carrFreq.take(PRNindexes)

@@ -32,7 +32,7 @@ GLONASS L3OC data- and pilot-channel code and carrier tracking.
 
 import numpy as np
 
-from commUtils import WaitBar, calcCNoPld, calcLoopCoef, calcLoopCoefCarr
+from commUtils import WaitBar, calcCNoPld, calcLoopCoef
 
 #%% Initialize result structure
 class Channel:
@@ -129,12 +129,12 @@ class TrackingEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return the receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -169,15 +169,16 @@ class TrackingEngine():
         TrackedNr = min(sum(acqResults.acqFlag), settings.numberOfChannels)
 
         #%% Initialize tracking variables =================================
-        # Summation interval for the code loop.
-        PDIcode = settings.intTime
+        # Summation interval for code and carrier loops
+        PDIcode = PDIcarr = settings.intTime
         #--- DLL variables ------------------------------------------------
         # Calculate DLL filter coefficient values.
         tau1code, tau2code = calcLoopCoef(
             settings.dllNoiseBandwidth, settings.dllDampingRatio, 1.0)
         #--- PLL variables ------------------------------------------------
-        # Calculate third-order carrier-loop filter coefficients.
-        pf3, pf2, pf1 = calcLoopCoefCarr(settings)
+        # Calculate PLL filter coefficient values.
+        tau1carr, tau2carr = calcLoopCoef(
+            settings.pllNoiseBandwidth, settings.pllDampingRatio, 1.0)
 
         # Number of code periods processed by each channel.
         codePeriods = settings.msToProcess
@@ -230,8 +231,8 @@ class TrackingEngine():
                 # The SIMD DLL consumes a guarded int32 code table.
                 L3OCCodeTable = np.asarray(L3OCCodeTable, dtype=np.int32)
             elif settings.correlatorType == 2:
-                # The CUDA DLL consumes a guarded int8 code table.
-                L3OCCodeTable = np.asarray(L3OCCodeTable, dtype=np.int8)
+                # The CUDA DLL consumes a guarded float32 code table.
+                L3OCCodeTable = np.asarray(L3OCCodeTable, dtype=np.float32)
 
             # --- Perform various initializations -----------------------------
             # Define initial code frequency basis of NCO
@@ -248,8 +249,8 @@ class TrackingEngine():
             oldCodeNco   = 0.0
             oldCodeError = 0.0
             # Carrier/Costas-loop parameters.
-            d2CarrError = 0.0
-            dCarrError = 0.0
+            oldCarrNco   = 0.0
+            oldCarrError = 0.0
 
             # C/N0 computation and 0.5-0.5 smoothing state.
             CNoValue = np.zeros(3)
@@ -259,8 +260,7 @@ class TrackingEngine():
             for loopCnt in range(codePeriods):
 
                 #%% GUI update ============================================
-                # Update the progress display periodically. This keeps the
-                # interface responsive without repainting every millisecond.
+                # Update the progress display at the configured interval.
                 if ((loopCnt + 1) % barUprate == 0 or
                         loopCnt + 1 == codePeriods):
                     trackingStatus = (
@@ -360,11 +360,11 @@ class TrackingEngine():
                                   / (2.0 * np.pi))
                     carrError = (carrError + carrErrorQ) / 2
 
-                # Implement the third-order carrier-loop filter and generate
-                # the NCO command, as in trkChannelsSerial.m.
-                d2CarrError = d2CarrError + carrError * pf3
-                dCarrError = d2CarrError + carrError * pf2 + dCarrError
-                carrNco = dCarrError + carrError * pf1
+                # Implement carrier loop filter and generate NCO command
+                carrNco = oldCarrNco + (tau2carr/tau1carr) * \
+                    (carrError - oldCarrError) + carrError * (PDIcarr/tau1carr)
+                oldCarrNco   = carrNco
+                oldCarrError = carrError
 
                 # Save carrier frequency for current correlation
                 chResults.carrFreq[loopCnt] = carrFreq
@@ -454,8 +454,6 @@ class TrackingEngine():
 
         settings = self.settings
         #--- Copy result variables for all channels -----------------------
-        # Channel objects already contain the preallocated result arrays that
-        # MATLAB constructs at the beginning of trkChannelsParallel.m.
         trkResults = self.trackResults
         # Number of active channels to be tracked.
         channelCnt = int(min(sum(acqResults.acqFlag), settings.numberOfChannels))
@@ -512,8 +510,8 @@ class TrackingEngine():
             # SIMD shares an int32 guarded-code table across all channels.
             L3OCCodeTable = np.asarray(L3OCCodeTable, dtype=np.int32)
         elif settings.correlatorType == 2:
-            # GPU shares an int8 guarded-code table across all channels.
-            L3OCCodeTable = np.asarray(L3OCCodeTable, dtype=np.int8)
+            # GPU shares a float32 guarded-code table across all channels.
+            L3OCCodeTable = np.asarray(L3OCCodeTable, dtype=np.float32)
 
         #%% Initialize tracking variables =================================
         # Number of code periods to process; one GLONASS L3OC period is 1 ms.
@@ -531,7 +529,7 @@ class TrackingEngine():
         tau1carr, tau2carr = calcLoopCoef(
             settings.pllNoiseBandwidth, settings.pllDampingRatio, 1.0)
 
-        # Update the GUI less often for the faster compiled correlators.
+        # Set the GUI update interval for the selected correlator.
         if settings.correlatorType == 0:
             barUprate = 50
         else:

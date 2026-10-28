@@ -135,12 +135,12 @@ class TrackingEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return the receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -248,7 +248,7 @@ class TrackingEngine():
             if settings.correlatorType == 1:
                 L1OCCodeTable = np.asarray(L1OCCodeTable, dtype=np.int32)
             elif settings.correlatorType == 2:
-                L1OCCodeTable = np.asarray(L1OCCodeTable, dtype=np.int8)
+                L1OCCodeTable = np.asarray(L1OCCodeTable, dtype=np.float32)
 
             #--- Perform various initializations --------------------------
             # Initial code and carrier NCO frequencies from acquisition.
@@ -573,13 +573,13 @@ class TrackingEngine():
             # SIMD shares an int32 QPSK code table across all channels.
             L1OCCodeTable = np.asarray(L1OCCodeTable, dtype=np.int32)
         elif settings.correlatorType == 2:
-            # GPU shares an int8 QPSK code table across all channels.
-            L1OCCodeTable = np.asarray(L1OCCodeTable, dtype=np.int8)
+            # GPU shares a float32 QPSK code table across all channels.
+            L1OCCodeTable = np.asarray(L1OCCodeTable, dtype=np.float32)
 
         #%% Initialize waitbar and variables for data reading =============
         # Number of coherent L1OC tracking intervals to process.
         numToProcess = trkResults[0].I_P.size
-        # Update the GUI less often for the faster compiled correlators.
+        # Set the GUI update interval for the selected correlator.
         if settings.correlatorType == 0:
             # NumPy reference QPSK correlator.
             barUprate = 5
@@ -987,6 +987,6 @@ class TrackingEngine():
 
 
 #%% Module entry point
-# This module defines tracking classes and performs no standalone processing.
+# No standalone processing.
 if __name__ == "__main__":
     pass

@@ -75,17 +75,17 @@ class AcqEngine():
         self.codeFreq = np.zeros(svNum)
         # Acquisition decisions; False means not acquired. Shape: (svNum,).
         self.acqFlag = np.full(svNum, False)
-        # Receiver settings retained by reference for all acquisition methods.
+        # Receiver settings.
         self._settings = settings
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return the receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -507,8 +507,7 @@ class AcqEngine():
                     localCodeCarr = (caCode200ms[codePeriodIndex] * localCarr1ms)
 
                     # Compute this millisecond's carrier start phase on the host
-                    # in float64 and reduce it modulo 2*pi. Double precision
-                    # avoids the fine-bin shift observed with a float32 start.
+                    # in float64 and reduce it modulo 2*pi.
                     initialPhase = np.fmod(2 * np.pi * freqMax *
                                     codePeriodIndex * codePeriod, 2 * np.pi)
 

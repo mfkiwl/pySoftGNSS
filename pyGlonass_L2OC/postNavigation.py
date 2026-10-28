@@ -31,7 +31,7 @@ Report the navigation status of the tracking-only GLONASS L2OCp receiver.
 """
 
 
-#%% Broadcast ephemeris placeholder
+#%% Satellite navigation status
 class Ephemeris:
     """Store the L2OCp tracking-only status for one satellite.
 
@@ -41,7 +41,7 @@ class Ephemeris:
     """
 
     def __init__(self, PRN=0):
-        """Initialize a placeholder because L2 CSI is not decoded.
+        """Initialize satellite identity and unavailable-decoding status.
 
         Args
         ----
@@ -122,19 +122,18 @@ class NavigationEngine:
         Returns
         -------
             self        - NavigationEngine
-                        Tracking-only post-navigation engine containing a
-                        placeholder ephemeris entry for each locked channel.
+                        Navigation engine containing the status of each tracked
+                        satellite; ephemerides are not decoded.
         """
         #%% Initialize tracking-only navigation results ======================
         self.navSolutions = NavSolutions()
         self.eph = {}
-        #--- Save satellites that remain in tracking lock --------------------
+        #--- Save satellites whose tracking processing completed ------------
         for channel in trackResults:
             if channel.lockFlag:
                 self.eph[channel.PRN] = Ephemeris(channel.PRN)
 
-        # L2 CSI is not decoded, so pseudorange and position computation are
-        # intentionally skipped for this pilot-tracking receiver.
+        # No decoded L2 CSI ephemerides are available for positioning.
         print("GLONASS L2OCp tracking-only mode: no L2 CSI ephemeris "
               "decoded, navigation solution skipped.")
         return self

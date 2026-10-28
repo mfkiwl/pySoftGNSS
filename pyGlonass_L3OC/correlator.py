@@ -164,15 +164,15 @@ class CorrGPUSerialQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Vector = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=1, flags="C_CONTIGUOUS")
+        float32Vector = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
         self._gpuLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Vector,       # L3OCCodeTable
+            float32Vector,    # L3OCCodeTable
             ctypes.c_int,     # L3OCCodeTable.size // 2
             ctypes.c_double,  # remCarrPhase
             ctypes.c_double,  # carrPhaseStep
@@ -198,7 +198,7 @@ class CorrGPUSerialQPSK:
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             L3OCCodeTable - numpy.ndarray
-                        Concatenated guarded int8 L3OCd/L3OCp codes:
+                        Concatenated guarded float32 L3OCd/L3OCp codes:
                         ``[L3OCd(last, period, first),
                         L3OCp(last, period, first)]``.
             remCarrPhase - float
@@ -385,8 +385,8 @@ class CorrGPUParallelQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Table = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=2, flags="C_CONTIGUOUS")
+        float32Table = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
         float64Vector = np.ctypeslib.ndpointer(
@@ -397,7 +397,7 @@ class CorrGPUParallelQPSK:
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Table,        # L3OCCodeTable
+            float32Table,     # L3OCCodeTable
             ctypes.c_int,     # codeLen
             ctypes.c_int,     # channelCnt
             float64Vector,    # remCarrPhase
@@ -426,7 +426,7 @@ class CorrGPUParallelQPSK:
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             L3OCCodeTable - numpy.ndarray
-                        C-contiguous int8 table containing concatenated
+                        C-contiguous float32 table containing concatenated
                         guarded L3OCd/L3OCp code branches for every channel.
             remCarrPhase - numpy.ndarray
                          Residual carrier phases in radians.
@@ -589,8 +589,7 @@ def corrPyParallelQPSK(settings, rawSignal, L3OCCodeTable, remCarrPhase,
                        startIdx, chSampSize, isDataRead):
     """Correlate all active L3OC channels against one shared IF block.
 
-    This function has the same calling interface as the SIMD and GPU
-    correlators. Each output column is ordered as
+    Each output column is ordered as
     ``[I_E, Q_E, I_P, Q_P, I_L, Q_L, pilot_I_E, pilot_Q_E,
     pilot_I_P, pilot_Q_P, pilot_I_L, pilot_Q_L]``.
 
@@ -619,7 +618,7 @@ def corrPyParallelQPSK(settings, rawSignal, L3OCCodeTable, remCarrPhase,
         chSampSize   - ndarray
                       Number of samples in each channel's code period.
         isDataRead   - int
-                      Shared-data refresh flag retained for interface parity.
+                      Shared-buffer refresh flag (unused in this correlator).
     Returns
     -------
         correValues   - ndarray
@@ -823,9 +822,10 @@ def codeSampling(settings, PRN, sampleLen, component):
     #=== Digitizing ========================================================
     #--- Make the index array used to read L3OC-code values ---------------
     # Make the one-based chip index used by the MATLAB code-table functions.
+    ts = 1 / settings.samplingFreq
+    tc = 1 / settings.codeFreqBasis
     codeValueIndex = np.ceil(
-        np.arange(1, sampleLen+1, dtype=np.float64) *
-        settings.codeFreqBasis/settings.samplingFreq).astype(np.int32)-1
+        (ts * np.arange(1, sampleLen+1, dtype=np.float64)) / tc).astype(np.int32)-1
     codeValueIndex %= settings.codeLength
 
     #--- Correct the last index due to numerical rounding -----------------

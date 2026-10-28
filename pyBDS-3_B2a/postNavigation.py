@@ -197,7 +197,6 @@ class Ephemeris:
                 object.
         """
         #%% Preparation for data-message decoding ==========================
-        # Check that the input has the form required by the MATLAB decoder.
         if not isinstance(navBitsBin, str):
             raise TypeError("The parameter BITS must be a character array!")
         if len(navBitsBin) < 288:
@@ -649,8 +648,7 @@ class NavigationEngine:
         # TOW of the first valid message [s]; infinity indicates no detection.
         TOW = np.full(settings.numberOfChannels, np.inf)
 
-        #--- Make a list excluding channels not in tracking lock ----------
-        # Make a list containing only channels that remain in tracking lock.
+        #--- Select channels that completed tracking processing ----------
         activeChnList = [
             channelNr for channelNr, channel in enumerate(trackResults)
             if channel.lockFlag ]
@@ -789,7 +787,7 @@ class NavigationEngine:
                 navSolutions.X[currMeasNr] = xyzdt[0]
                 navSolutions.Y[currMeasNr] = xyzdt[1]
                 navSolutions.Z[currMeasNr] = xyzdt[2]
-                # As in MATLAB, store zero clock bias for the first solution;
+                # Store zero clock bias for the first solution;
                 # subsequent values are the estimated range-form bias [m].
                 navSolutions.dt[currMeasNr] = (
                     0 if currMeasNr == 0 else xyzdt[3])
@@ -890,8 +888,7 @@ class NavigationEngine:
             refU = settings.truePositionU
             refPointText = "Reference position"
 
-        # Figure 300 follows MATLAB and avoids overwriting auto-numbered user
-        # figures when navigation plots are closed and reopened.
+        # Use figure 300 for navigation plots.
         #=== Select or create and clear the figure ============================
         figure = plt.figure(300, figsize=(12, 8), clear=True)
         figure.canvas.manager.set_window_title("Navigation solutions")
@@ -931,8 +928,7 @@ class NavigationEngine:
         positionAxes.legend()
 
         #--- Satellite sky plot -----------------------------------------------
-        # Satellite sky plot. The utility follows MATLAB's
-        # satellite-by-epoch layout and spherical elevation mapping.
+        # Plot satellite-by-epoch azimuth/elevation arrays on the sky axes.
         skyPlot(skyAxes, navSolutions.az, navSolutions.el,
                 navSolutions.PRN[:, 0])
         skyAxes.set_title(

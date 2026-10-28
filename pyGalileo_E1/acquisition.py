@@ -80,7 +80,7 @@ class AcqEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return the receiver settings.
 
         Returns
         -------
@@ -143,6 +143,7 @@ class AcqEngine():
 
         #%% Coarse acquisition ============================================
         for PRN in settings.acqSatelliteList:
+            # Generate sampled E1B/E1C BOC(1,1) codes for acquisition.
             dataTable = correlator.codeSampling(
                 settings, PRN, samplesPerCode, "data")
             pilotTable = correlator.codeSampling(
@@ -195,7 +196,8 @@ class AcqEngine():
             if self.peakMetric[PRN - 1] > settings.acqThreshold:
                 self.acqFlag[PRN - 1] = True
                 print(f"{PRN:02d} ", end="", flush=True)
-                pilotCode = correlator.generatePilotCode(PRN, 1)
+                # Use E1C BOC(1,1) for fine carrier-frequency acquisition.
+                pilotCode = correlator.generatePilotCode(PRN, 'BOC11')
                 pilotCodeFine = pilotCode[codeValueIndex]
                 sigFine = longSignal[codePhaseMax:codePhaseMax + fineSampleCount]
                 localCarrFine = np.exp(-1j * freqMax * finePhasePoints)
@@ -274,6 +276,7 @@ class AcqEngine():
 
         #%% Coarse acquisition ============================================
         for PRN in settings.acqSatelliteList:
+            # Generate sampled E1B/E1C BOC(1,1) codes for acquisition.
             dataTable = correlator.codeSampling(
                 settings, PRN, samplesPerCode, "data")
             pilotTable = correlator.codeSampling(
@@ -323,7 +326,8 @@ class AcqEngine():
             if self.peakMetric[PRN - 1] > settings.acqThreshold:
                 self.acqFlag[PRN - 1] = True
                 print(f"{PRN:02d} ", end="", flush=True)
-                pilotCode = xp.asarray(correlator.generatePilotCode(PRN, 1),
+                # Use E1C BOC(1,1) for fine carrier-frequency acquisition.
+                pilotCode = xp.asarray(correlator.generatePilotCode(PRN, 'BOC11'),
                                        dtype=realDataType)
                 sigFine = longSignal[codePhaseMax:codePhaseMax + fineSampleCount]
                 localCarr1ms = xp.exp(

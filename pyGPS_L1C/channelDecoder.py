@@ -40,8 +40,8 @@ class BCHDecoder:
     def BCH51_8Decoding(bits):
         """Decode the BCH(51, 8) data symbols of CNAV-2 subframe 1.
 
-        A total of 2^8 hypotheses are tested to recover the nine TOI bits.
-        The sign of the largest correlation supplies the ninth bit.
+        Test 2^8 BCH hypotheses using all 52 symbols of subframe 1. The sign
+        of the largest absolute correlation supplies the leading TOI bit.
 
         Args
         ----
@@ -50,7 +50,8 @@ class BCHDecoder:
         Returns
         -------
             flag        - int
-                        One for successful decoding and zero otherwise.
+                        One if the best absolute correlation is at least 40;
+                        zero otherwise.
             decodedBits - ndarray
                         Nine decoded TOI bits, or an empty array on failure.
         """
@@ -86,11 +87,16 @@ class LDPCDecoder:
 
     @staticmethod
     def getH_information():
-        """Restore and return the CNAV-2 H2 and H3 parity-check matrices."""
+        """Restore the CNAV-2 subframe-2 and subframe-3 parity-check matrices.
+
+        Returns
+        -------
+            H2, H3      - scipy.sparse.csr_matrix
+                        Binary matrices of shape (600, 1200) and (274, 548).
+        """
         from scipy.sparse import csr_matrix
 
-        # H2 and H3 are copied losslessly from the MATLAB GPS L1C receiver.
-        # Each row lists its nonzero column indices; -1 pads shorter rows.
+        # Each row lists zero-based nonzero column indices; -1 pads shorter rows.
         H2_idx = np.array([
             [0, 166, 253, 470, 504, 575, 600, 601, -1], [159, 367, 451, 505, 530, 564, 595, 601, 602],
             [170, 320, 478, 523, 553, 570, 602, 603, -1], [60, 199, 401, 475, 537, 559, 603, 604, -1],
@@ -551,7 +557,7 @@ class LDPCDecoder:
 
     @staticmethod
     def _graph(hMatrix):
-        """Return row-edge and column-index arrays for one matrix."""
+        """Return the CSR matrix, row-edge lists and edge-column indices."""
         hMatrix = hMatrix.tocsr()
         rowConnections = [
             np.arange(hMatrix.indptr[row], hMatrix.indptr[row + 1])
@@ -565,6 +571,17 @@ class LDPCDecoder:
         The M2M4 moment estimator operates on the I/Q prompt correlator
         outputs. The normalized samples and variance are used to initialize
         soft-decision LLR values.
+
+        Args
+        ----
+            I_P, Q_P    - array-like
+                        In-phase and quadrature prompt correlator outputs.
+        Returns
+        -------
+            normIp      - numpy.ndarray
+                        Prompt-I values divided by estimated signal amplitude.
+            normSigma2  - float
+                        Noise variance normalized by estimated signal power.
         """
         tiny = 1e-12
         I = np.asarray(I_P)
@@ -586,12 +603,33 @@ class LDPCDecoder:
 
     @staticmethod
     def initLlr(receivedSignal, noiseVariance):
-        """Calculate BPSK LLR values for AWGN soft-decision decoding."""
+        """Calculate BPSK/AWGN LLRs; positive values favour logical zero."""
         return 2 * np.asarray(receivedSignal) / max(noiseVariance, np.finfo(float).eps)
 
     @classmethod
     def msDecode(cls, llr, hMatrix, settings):
-        """Decode one GPS L1C CNAV-2 codeword using Min-Sum updates."""
+        """Decode one GPS L1C CNAV-2 codeword using Min-Sum updates.
+
+        A positive offset selects offset Min-Sum; otherwise alpha between
+        zero and one selects normalized Min-Sum. Stop on a zero syndrome.
+
+        Args
+        ----
+            llr         - array-like
+                        Input LLRs; positive values favour logical zero.
+            hMatrix     - scipy.sparse matrix
+                        H2 or H3 binary parity-check matrix.
+            settings    - object
+                        Iteration limit, scaling factor and offset.
+        Returns
+        -------
+            decodedCodeword - numpy.ndarray
+                            Full hard-decision codeword, including parity.
+            iteration   - int
+                        Number of iterations performed.
+            error       - bool
+                        True if no zero syndrome was obtained; False otherwise.
+        """
         hMatrix, cnConnections, colIndices = cls._graph(hMatrix)
         llr = np.asarray(llr, dtype=np.float64).reshape(-1)
         maxIterations = int(settings.ldpcMaxIterations)
@@ -602,6 +640,7 @@ class LDPCDecoder:
         decodedCodeword = (llr < 0).astype(np.int8)
 
         for iteration in range(1, maxIterations + 1):
+            # Check-node messages exclude the edge being updated.
             for edgeIndices in cnConnections:
                 qMessages = varToChkMsg[edgeIndices]
                 signVec = np.where(qMessages < 0, -1.0, 1.0)
@@ -621,10 +660,12 @@ class LDPCDecoder:
                 chkToVarMsg[edgeIndices] = (
                     np.prod(signVec) * signVec * magnitudes)
 
+            # Sum incoming check-node messages at each variable node.
             sumChkToVar = np.zeros(llr.size)
             np.add.at(sumChkToVar, colIndices, chkToVarMsg)
             posteriorLlr = llr + sumChkToVar
             decodedCodeword = (posteriorLlr < 0).astype(np.int8)
+            # Test LDPC parity checks; this is not a navigation-message CRC.
             if not np.any((hMatrix @ decodedCodeword) % 2):
                 return decodedCodeword, iteration, False
             varToChkMsg = posteriorLlr[colIndices] - chkToVarMsg
@@ -633,7 +674,22 @@ class LDPCDecoder:
 
     @classmethod
     def decode(cls, softI, softQ, hMatrix, settings):
-        """Normalize prompt samples and decode one CNAV-2 LDPC codeword."""
+        """Normalize prompt samples and decode one CNAV-2 LDPC codeword.
+
+        Args
+        ----
+            softI, softQ - array-like
+                         Polarity-corrected prompt samples for one codeword.
+            hMatrix     - scipy.sparse matrix
+                        H2 or H3 binary parity-check matrix.
+            settings    - object
+                        LDPC decoder settings.
+        Returns
+        -------
+            decodedCodeword, iteration, error
+                        Full codeword, iteration count and syndrome-failure
+                        flag returned by ``msDecode``.
+        """
         normIp, normSigma2 = cls.noiseEst(softI, softQ)
         # Positive prompt-I samples map to logical one after TOI polarity
         # correction; initLlr uses the conventional zero-positive mapping.

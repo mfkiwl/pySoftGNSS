@@ -7,7 +7,6 @@
  * Time: Feb, 20, 2026
  *
  * Notes:
- *   - Core processing is kept compatible with the original implementation.
  *   - fileType = 1: real IF samples [I0 I1 I2 ...]
  *   - fileType = 2: complex interleaved IF samples [I0 Q0 I1 Q1 ...]
  *   - Output layout is 18 x channelCnt:
@@ -39,7 +38,7 @@
 /* Settings struct -------------------------------------------------------------
  * trkMode        : 0 - channel-serial tracking; 1 - channel-parallel tracking
  * fileType       : 1 - real samples; 2 - complex samples
- * earlyLateSpc   : half of the early - late code correlation spacing (chips)
+ * earlyLateSpc   : half of the early-late spacing in code-table points
  *------------------------------------------------------------------------------*/
 typedef struct {
     int trkMode;
@@ -77,10 +76,10 @@ struct GPU_Complex
 	float i;
 	__host__ __device__ GPU_Complex() : r(0.0f), i(0.0f) {};
 
-	// Constructor for a complex number with real amd imag parts of float
+	// Constructor for a complex number with float real and imaginary parts
     __host__ __device__ GPU_Complex(float realPart, float imagPart) : r(realPart), i(imagPart) {}
 
-	// Magnitude of a complex number
+	// Squared magnitude of a complex number
 	__host__ __device__ float magnitude2() { return r * r + i * i; }
 
 	__device__ GPU_Complex operator*(const GPU_Complex& a) {
@@ -166,23 +165,22 @@ static int initialized = 0;
  * Python ctypes entry point.
  * Args   : fileType       I   1 - real; 2 - interleaved [I,Q] int16 samples
  *          rawSignalLen   I   physical number of int16 elements in rawSignal
- *          earlyLateSpc   I   half early-late spacing (12x local-code chips)
+ *          earlyLateSpc   I   half early-late spacing (code-table points)
  *          rawSignal      I   shared IF block
  *          caCodeTable    I   int8 C-order table [channelCnt][3*codeLen]
  *          codeLen        I   guarded-code elements in one QMBOC branch
  *          channelCnt     I   active tracking-channel count
  *          remCarrPhase   I   residual carrier phases (rad)
  *          carrPhaseStep  I   carrier phase increments (rad/sample)
- *          remCodePhase   I   residual code phases (12x local-code chips)
- *          codePhaseStep  I   code phase increments (12x chips/sample)
+ *          remCodePhase   I   residual code phases (code-table points)
+ *          codePhaseStep  I   code phase increments (code-table points/sample)
  *          startIndex     I   zero-based logical sample offsets in rawSignal
  *          chSampSize     I   logical sample count for each channel
  *          isDataRead     I   1 uploads new rawSignal data; 0 reuses it
  * Return : persistent channel-major double array with 18 values per channel:
  *          [data E/P/L I/Q, pilotBOC11 E/P/L I/Q,
- *           pilotBOC61 E/P/L I/Q], or NULL on invalid input/CUDA failure. The
- *          pointer remains valid until corrEngineFree(); each successful
- *          corrEngine() call overwrites the array contents.
+ *           pilotBOC61 E/P/L I/Q], or NULL on invalid input/CUDA failure.
+ *          Each successful corrEngine() call overwrites the array contents.
  *------------------------------------------------------------------------------*/
 DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenInput,
 	double earlyLateSpc, short* rawSignal, signed char* caCodeTable,
@@ -260,13 +258,12 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenInput,
 		blockPerGrid = (int)(blksize + 100 + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 
 		/* The combined QMBOC code table is arranged as:
-		     [B1CData(last,1..N,first); pilotBOC11(last,1..N,first);
-		      pilotBOC61(last,1..N,first)].
+		     [guarded B1CData; guarded pilotBOC11;
+		      guarded pilotBOC61].
 		   Only the small Early/Prompt/Late phase shift is kept here. The data/pilot
 		   branch offset is added later as an integer index in the CUDA kernel,
 		   avoiding loss of fractional code-phase precision in float arithmetic.
-		   The shifts are used with ceil-style indexing to match the MATLAB
-		   reference correlator: index = ceil(codePhase + shift). */
+		   Code-table indexes are formed as ceil(codePhase + shift). */
 		float initCodePhase[CORR_NUMBER] = {
 			(float)(-settings.earlyLateSpc),
 			0.0f,
@@ -302,7 +299,7 @@ DLL_EXPORT double* corrEngine(int fileType, int rawSignalLenInput,
 			return NULL;
 		}
 
-		/* ------- Alloctate CUDA streams ------- */
+		/* ------- Allocate CUDA streams ------- */
 		streams = (cudaStream_t*)calloc(channelCnt, sizeof(cudaStream_t));
 		if (!streams) {
 			cleanup();
@@ -398,7 +395,7 @@ DLL_EXPORT void corrEngineFree(void)
  */
 __global__ void mixCarrReal(const short* d_pRawSignal, GPU_Complex* d_BasebandSignal,int blksize, float remCarrPhase,float carrPhaseStep)
 {
-	// CUDA version of floating point NCO and vector dot product integrated
+	// Generate the carrier replica and wipe off the carrier.
 	
 	for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < blksize; index += blockDim.x * gridDim.x){
 		float sin, cos;
@@ -416,7 +413,7 @@ __global__ void mixCarrReal(const short* d_pRawSignal, GPU_Complex* d_BasebandSi
 __global__ void mixCarrComplex(const short* d_pRawSignal, GPU_Complex* d_BasebandSignal,
 	int blksize, float remCarrPhase, float carrPhaseStep)
 {
-	// CUDA version of floating point NCO and vector dot product integrated
+	// Generate the carrier replica and wipe off the carrier.
 	const short2* d_pRawSignalIQ = reinterpret_cast<const short2*>(d_pRawSignal);
 	for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < blksize; index += blockDim.x * gridDim.x) {
 		float sin, cos;

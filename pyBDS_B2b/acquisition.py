@@ -507,8 +507,7 @@ class AcqEngine():
                     localCodeCarr = (caCode200ms[codePeriodIndex] * localCarr1ms)
 
                     # Compute this millisecond's carrier start phase on the host
-                    # in float64 and reduce it modulo 2*pi. Double precision
-                    # avoids the fine-bin shift observed with a float32 start.
+                    # in float64 and reduce it modulo 2*pi.
                     initialPhase = np.fmod(2 * np.pi * freqMax *
                                     codePeriodIndex * codePeriod, 2 * np.pi)
 

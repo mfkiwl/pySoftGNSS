@@ -1,13 +1,12 @@
 /*================================================================================
  * Filename: corrNeonSIMDSerialQMBOC.cpp
  * Description: AArch64 NEON SIMD single-channel QMBOC tracking correlator exposed
- *              through a small C ABI for Python ctypes.
+ *              through a C interface for Python ctypes.
  *
  * Authors: Yafeng Li (School of Automation, Beijing Information Science and Technology University)
  * Time: Aug, 1, 2026
  *
- * The core processing stages are intentionally kept aligned with the
- * channel-parallel SIMD correlator:
+ * Processing stages:
  *   1) mixCarrReal() / mixCarrComplex()
  *   2) localCodeGen()
  *   3) correlator()
@@ -124,8 +123,7 @@ DLL_EXPORT double* corrEngine(int fileType, int blksize, int rShiftBits,
 	   code periods. Later logical block sizes must fit the first size + 100. */
 	if (!initialized) {
 		/* ----------------- Validate and cache the serial settings once -----------------
-		   fileType and rShiftBits stay unchanged after the first call. If either
-		   changes later, call corrEngineFree() and reinitialize the serial engine. */
+		   Cached settings and input types remain fixed until corrEngineFree(). */
 		// gateway check
 		if (!checkInputs(fileType, blksize, rawSignal, caCode, codeLen)) {
 			return NULL;
@@ -167,9 +165,8 @@ DLL_EXPORT double* corrEngine(int fileType, int blksize, int rShiftBits,
 	}
 
 	/* --------------------- Initialize output and run the three-stage core ---------------------
-	   The output layout follows trkChannelsSerial() directly:
-	     [data E/P/L I/Q, pilotBOC11 E/P/L I/Q, pilotBOC61 E/P/L I/Q]
-	   and the processing stages are intentionally unchanged from the shared SIMD core. */
+	   Output layout:
+	     [data E/P/L I/Q, pilotBOC11 E/P/L I/Q, pilotBOC61 E/P/L I/Q] */
 	if (settings.fileType == 1) {
 		mixCarrReal(rawSignal, carrPhaseStep, remCarrPhase, (size_t)blksize, iBasebandSignal, qBasebandSignal);
 	} else {
@@ -317,7 +314,8 @@ void mixCarrReal(const short *rawSignal, double carrPhaseStep, double remCarrPha
         if (settings.rShiftBits != 0) {
             sample = (short)(sample >> settings.rShiftBits);
         }
-		int n = ((int)remCarrPhase) % 16;
+		/* Wrap the truncated phase to 0..15, including negative phases. */
+		int n = ((int)remCarrPhase) & 0x0F;
         iBasebandSignal[0] = (short)(cost[n] * sample);
         qBasebandSignal[0] = (short)(sint[n] * sample);
         remCarrPhase += phaseStep;
@@ -464,7 +462,8 @@ void mixCarrComplex(const short* rawSignal, double carrPhaseStep, double remCarr
 		     Qbb =  Q*cos - I*sin
 		   Here cos/sin denote the quantized integer LUT coefficients. */
 		/* Each complete I/Q expression is converted to short. */
-		int n = ((int)remCarrPhase) % 16;
+		/* Wrap the truncated phase to 0..15, including negative phases. */
+		int n = ((int)remCarrPhase) & 0x0F;
         iBasebandSignal[0] = (short)(cost[n] * sampleI + sint[n] * sampleQ);
         qBasebandSignal[0] = (short)(cost[n] * sampleQ - sint[n] * sampleI);
 		remCarrPhase += phaseStep;
@@ -475,9 +474,9 @@ void mixCarrComplex(const short* rawSignal, double carrPhaseStep, double remCarr
  * Generate local code sequences for the QMBOC data, pilot BOC(1,1), and
  * pilot BOC(6,1) branches.
  * Args   : int     *caCode          I   int32 concatenated QMBOC code table
- *                                      [B1CData(last,1..N,first),
- *                                       pilotBOC11(last,1..N,first),
- *                                       pilotBOC61(last,1..N,first)]
+ *                                      [guarded B1CData,
+ *                                       guarded pilotBOC11,
+ *                                       guarded pilotBOC61]
  *          size_t codeLen           I   element count of one guarded branch
  *          double remCodePhase      I   initial code phase in code-table grid units
  *          double codePhaseStep     I   code-table grid increment per IF sample
@@ -496,16 +495,15 @@ void localCodeGen(const int *caCode, size_t codeLen, double remCodePhase, double
 	if (remCodePhase >= codeLen)
 		remCodePhase -= floor(remCodePhase / codeLen)*codeLen;
 	/* Keep the large integer part of the code phase out of SIMD float
-	   arithmetic. Long QMBOC tables can have million-element absolute
-	   indexes; converting that whole value to float loses fractional
+	   arithmetic. Converting a large code-phase value to float can lose fractional
 	   code-table grid precision. */
 	const int codeIndexBase = (int)floor(remCodePhase);
 	remCodePhase -= (double)codeIndexBase;
 
-	/* caCode is laid out as [B1CData(last,1..N,first), pilotBOC11(last,1..N,first),
-	   pilotBOC61(last,1..N,first)].
-	   Shifting the starting phase by -earlyLateSpc + 1.0 accounts for the leading
-	   guard value. The caller keeps all E/P/L indexes within each guarded span. */
+	/* caCode concatenates guarded data, pilotBOC11 and pilotBOC61 tables.
+	   The caller supplies the guard-phase offset and enough guard points for
+	   all E/P/L indexes; no per-sample wrapping is performed here.
+	   Branches share E/P/L indexes; only the table base offset changes. */
 	short *eCodeD = localCode[0], *pCodeD = localCode[1], * lCodeD = localCode[2];
 	short* eCodeP11 = localCode[3], * pCodeP11 = localCode[4], * lCodeP11 = localCode[5];
 	short* eCodeP61 = localCode[6], * pCodeP61 = localCode[7], * lCodeP61 = localCode[8];
@@ -513,8 +511,7 @@ void localCodeGen(const int *caCode, size_t codeLen, double remCodePhase, double
 	int32x4x2_t Index_reg1, Index_reg2;
 	int16x8x2_t EPL_reg;
 	float32x4x2_t codePhase_reg1, codePhase_reg2;
-	/* Here the natural 0..7 order is fine because code indexes are gathered as
-	   two groups of NEON vectors and packed back to 16 x int16 code chips. */
+	/* Gather two groups of eight chronological indexes, then pack to int16. */
 	const float stepNumber[8] = { 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f };
 	float32x4x2_t stepNumber_reg = { { vld1q_f32(stepNumber), vld1q_f32(stepNumber + 4) } };
 	const float32x4_t remCodePhase_reg = vdupq_n_f32((float)remCodePhase);
@@ -557,7 +554,7 @@ void localCodeGen(const int *caCode, size_t codeLen, double remCodePhase, double
 		vst1q_s16(eCodeP61 + 8, EPL_reg.val[1]);
 
 		/* ----------------------- Prompt code generation ----------------------- */
-		/* Prompt is just Early shifted by +earlyLateSpc code-table grid units. */
+		/* Prompt is Early shifted by +earlyLateSpc code-table points. */
 		for (int k = 0; k < 2; ++k) {
 			codePhase_reg1.val[k] = vaddq_f32(codePhase_reg1.val[k], earlyLateSpc_reg);
 			codePhase_reg2.val[k] = vaddq_f32(codePhase_reg2.val[k], earlyLateSpc_reg);
@@ -771,7 +768,7 @@ static void* checkedAlignedMalloc(size_t nbytes, const char* name)
 
 /* gatherCode16 ----------------------------------------------------------------
  * Gather 16 local-code chips from the int32 code table and repack them
- * into two NEON vectors of 8 x int16 samples for the existing correlator path.
+ * into two NEON vectors of 8 x int16 samples for correlation.
  * Signed saturation narrows the gathered chips; all indexes must be in bounds.
  * Args   : const int* caCode         I   int32 code table for one PRN
  *          int32x4x2_t Index_reg1     I   code indexes for samples 0..7

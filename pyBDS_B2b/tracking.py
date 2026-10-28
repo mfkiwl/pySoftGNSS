@@ -120,12 +120,12 @@ class TrackingEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return the receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -247,8 +247,7 @@ class TrackingEngine():
             for loopCnt in range(numToProcess):
 
                 #%% GUI update ============================================
-                # Update the progress display periodically. This keeps the
-                # interface responsive without repainting every millisecond.
+                # Update the progress display at the configured interval.
                 if ((loopCnt + 1) % barUprate == 0 or
                         loopCnt + 1 == numToProcess):
                     totalMs = round(numToProcess * settings.intTime * 1000)
@@ -415,8 +414,7 @@ class TrackingEngine():
 
         settings = self.settings
         #--- Copy result variables for all channels -----------------------
-        # Channel objects already contain the preallocated result arrays that
-        # MATLAB constructs at the beginning of trkChannelsParallel.m.
+        # Channel objects already contain the preallocated result arrays.
         trkResults = self.trackResults
         # Number of active channels to be tracked.
         channelCnt = int(min(sum(acqResults.acqFlag), settings.numberOfChannels))
@@ -491,7 +489,7 @@ class TrackingEngine():
         tau1carr, tau2carr = calcLoopCoef(
             settings.pllNoiseBandwidth, settings.pllDampingRatio, 0.25)
 
-        # Update the GUI less often for the faster compiled correlators.
+        # Update the GUI less often for the compiled correlators.
         if settings.correlatorType == 0:
             barUprate = 50
         else:
@@ -867,6 +865,6 @@ class TrackingEngine():
         return self
 
 #%% Module entry point
-# This module defines tracking classes and performs no standalone processing.
+# No standalone processing.
 if __name__ == "__main__":
     pass

@@ -165,15 +165,15 @@ class CorrGPUSerialQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Vector = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=1, flags="C_CONTIGUOUS")
+        float32Vector = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
         self._gpuLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Vector,       # E5aCodeTable
+            float32Vector,    # E5aCodeTable
             ctypes.c_int,     # E5aCodeTable.size // 2
             ctypes.c_double,  # remCarrPhase
             ctypes.c_double,  # carrPhaseStep
@@ -199,7 +199,7 @@ class CorrGPUSerialQPSK:
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             E5aCodeTable - numpy.ndarray
-                        Concatenated guarded int8 E5aI/E5aQ codes:
+                        Concatenated guarded float32 E5aI/E5aQ codes:
                         ``[E5aI(last, period, first),
                         E5aQ(last, period, first)]``.
             remCarrPhase - float
@@ -386,8 +386,8 @@ class CorrGPUParallelQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Table = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=2, flags="C_CONTIGUOUS")
+        float32Table = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
         float64Vector = np.ctypeslib.ndpointer(
@@ -398,7 +398,7 @@ class CorrGPUParallelQPSK:
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Table,        # E5aCodeTable
+            float32Table,     # E5aCodeTable
             ctypes.c_int,     # codeLen
             ctypes.c_int,     # channelCnt
             float64Vector,    # remCarrPhase
@@ -427,7 +427,7 @@ class CorrGPUParallelQPSK:
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             E5aCodeTable - numpy.ndarray
-                        C-contiguous int8 table containing concatenated
+                        C-contiguous float32 table containing concatenated
                         guarded E5aI/E5aQ code branches for every channel.
             remCarrPhase - numpy.ndarray
                          Residual carrier phases in radians.
@@ -533,8 +533,7 @@ def corrPySerialQPSK(settings, rawSignal, E5aCodeTable, remCarrPhase,
     # Time index for each sampling point.
     sampleInd = np.arange(blksize)
     codeInd = sampleInd * codePhaseStep
-    # Python uses zero-based indices, so MATLAB's trailing +1 local-code
-    # offset is not required below.
+    # Local-code table indices are zero-based.
 
     # Define index into early code vectors.
     tcode = remCodePhase - earlyLateSpc + codeInd
@@ -590,8 +589,7 @@ def corrPyParallelQPSK(settings, rawSignal, E5aCodeTable, remCarrPhase,
                        startIdx, chSampSize, isDataRead):
     """Correlate all active E5a channels against one shared IF block.
 
-    This function has the same calling interface as the SIMD and GPU
-    correlators. Each output column is ordered as
+    Each output column is ordered as
     ``[I_E, Q_E, I_P, Q_P, I_L, Q_L, pilot_I_E, pilot_Q_E,
     pilot_I_P, pilot_Q_P, pilot_I_L, pilot_Q_L]``.
 
@@ -620,7 +618,7 @@ def corrPyParallelQPSK(settings, rawSignal, E5aCodeTable, remCarrPhase,
         chSampSize   - ndarray
                       Number of samples in each channel's code period.
         isDataRead   - int
-                      Shared-data refresh flag retained for interface parity.
+                      Unused here; samples are read directly from rawSignal.
     Returns
     -------
         correValues   - ndarray
@@ -678,8 +676,7 @@ def corrPyParallelQPSK(settings, rawSignal, E5aCodeTable, remCarrPhase,
         lateCodeD = E5aCodeD[tcode]
         lateCodeP = E5aCodeP[tcode]
 
-        # Define index into Prompt code vectors. Python uses zero-based
-        # indices, so MATLAB's trailing +1 index offset is not required.
+        # Define zero-based indices into the Prompt code vectors.
         tcode = np.ceil(codePhase).astype(np.int32)
         promptCodeD = E5aCodeD[tcode]
         promptCodeP = E5aCodeP[tcode]
@@ -755,10 +752,9 @@ def generateDataCode(PRN, flag=1):
         (int(bit) for bit in f"{int('50661', 8):015b}"[:14]),
         dtype=np.int8)
 
-    # Start values for Register 2. The fixed-width binary conversion keeps
-    # a possible leading zero that MATLAB dec2bin otherwise omits.
+    # Keep all 14 bits of the Register 2 initial state, including leading zeros.
     PRN = int(PRN)
-    # Python uses zero-based table indices; MATLAB selects row PRN.
+    # Select the initial state for this PRN.
     Register2 = np.fromiter(
         (int(bit) for bit in f"{e5ai_init[PRN-1]:014b}"), dtype=np.int8)
 
@@ -768,8 +764,7 @@ def generateDataCode(PRN, flag=1):
         RegOut1 = Register1*taps1_coef
         RegOut2 = Register2*taps2_coef
         Pri_E5aI[ind] = ((1-2*RegOut1[0])*(1-2*RegOut2[0]))
-        # Exclusive-OR feedback. NumPy XOR on the binary taps is equivalent
-        # to the bipolar product and reconversion used in MATLAB.
+        # XOR the tapped binary register outputs to obtain the feedback bit.
         feedback1 = np.bitwise_xor.reduce(RegOut1)
         feedback2 = np.bitwise_xor.reduce(RegOut2)
         Register1[:-1] = Register1[1:]
@@ -827,10 +822,9 @@ def generatePilotCode(PRN, flag=1):
         (int(bit) for bit in f"{int('50661', 8):015b}"[:14]),
         dtype=np.int8)
 
-    # Start values for Register 2. The fixed-width binary conversion keeps
-    # a possible leading zero that MATLAB dec2bin otherwise omits.
+    # Keep all 14 bits of the Register 2 initial state, including leading zeros.
     PRN = int(PRN)
-    # Python uses zero-based table indices; MATLAB selects row PRN.
+    # Select the initial state for this PRN.
     Register2 = np.fromiter(
         (int(bit) for bit in f"{e5aq_init[PRN-1]:014b}"), dtype=np.int8)
 
@@ -840,8 +834,7 @@ def generatePilotCode(PRN, flag=1):
         RegOut1 = Register1*taps1_coef
         RegOut2 = Register2*taps2_coef
         Pri_E5aQ[ind] = ((1-2*RegOut1[0])*(1-2*RegOut2[0]))
-        # Exclusive-OR feedback. NumPy XOR on the binary taps is equivalent
-        # to the bipolar product and reconversion used in MATLAB.
+        # XOR the tapped binary register outputs to obtain the feedback bit.
         feedback1 = np.bitwise_xor.reduce(RegOut1)
         feedback2 = np.bitwise_xor.reduce(RegOut2)
         Register1[:-1] = Register1[1:]
@@ -849,7 +842,7 @@ def generatePilotCode(PRN, flag=1):
         Register1[-1] = feedback1
         Register2[-1] = feedback2
 
-    #----- E5aQ primary or tiered code generation -------------------------
+    #----- E5aQ primary-code output -------------------------------------
     if flag == 1:
         return Pri_E5aQ
     raise ValueError("E5aQ tiered-code generation is not used by this receiver")
@@ -885,9 +878,10 @@ def codeSampling(settings, PRN, sampleLen, component):
 
     #=== Digitizing ========================================================
     #--- Make the index array used to read E5a-code values ----------------
+    ts = 1 / settings.samplingFreq
+    tc = 1 / settings.codeFreqBasis
     codeValueIndex = np.ceil(
-        np.arange(1, sampleLen + 1) * code.size /
-        settings.samplesPerCode).astype(np.int32) - 1
+        (ts * np.arange(1, sampleLen + 1)) / tc).astype(np.int32) - 1
 
     #--- Correct the last index due to numerical rounding -----------------
     codeValueIndex[-1] = code.size - 1

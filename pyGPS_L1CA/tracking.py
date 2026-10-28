@@ -120,12 +120,12 @@ class TrackingEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -413,8 +413,6 @@ class TrackingEngine():
 
         settings = self.settings
         #--- Copy result variables for all channels -----------------------
-        # Channel objects already contain the preallocated result arrays that
-        # MATLAB constructs at the beginning of trkChannelsParallel.m.
         trkResults = self.trackResults
         # Number of active channels to be tracked.
         channelCnt = int(min(sum(acqResults.acqFlag), settings.numberOfChannels))
@@ -489,7 +487,7 @@ class TrackingEngine():
         tau1carr, tau2carr = calcLoopCoef(
             settings.pllNoiseBandwidth, settings.pllDampingRatio, 0.25)
 
-        # Update the GUI less often for the faster compiled correlators.
+        # Update the GUI less often for compiled correlators.
         if settings.correlatorType == 0:
             barUprate = 50
         else:

@@ -79,12 +79,12 @@ class AcqEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -206,8 +206,8 @@ class AcqEngine():
                 results = np.abs(fft.ifft(convCodeIQ))
 
                 if settings.pilotACQflag:
-                    # Pilot signal components; data and pilot powers are
-                    # combined with the configured 1:3 weighting.
+                    # Combine data and pilot correlation magnitudes
+                    # with weights 1:3.
                     convCodeIQ = IQfreqDom * pilotPriFreqDom
                     results = (results + 3*np.abs(fft.ifft(convCodeIQ))) / 4
 
@@ -243,7 +243,7 @@ class AcqEngine():
             secondPeak = float(np.max(results[codePhaseRange]))
             # Save code-phase acquisition result.
             self.codePhase[PRN - 1] = codePhaseMax
-            # Store the GLRT statistic.
+            # Store the primary-to-secondary correlation-peak ratio.
             self.peakMetric[PRN - 1] = peakMax / secondPeak
             # Store the searched PRN.
             self.PRN[PRN - 1] = PRN
@@ -253,7 +253,7 @@ class AcqEngine():
             if codePhaseMax + 20 * samplesPerCode > longSignal.size:
                 codePhaseMax -= samplesPerCode
 
-            # A GLRT statistic above the threshold indicates that the B1C
+            # A peak ratio above the threshold indicates that the B1C
             # signal has been found.
             if self.peakMetric[PRN - 1] > settings.acqThreshold:
                 #%% Fine resolution frequency search ======================
@@ -262,7 +262,7 @@ class AcqEngine():
                 print(f"{PRN:02d} ", end="", flush=True)
 
                 #--- Prepare 200 ms code, carrier and input signals --------
-                # Use the same branch selected for coarse acquisition.
+                # Use the pilot for assisted acquisition, otherwise the data.
                 if settings.pilotACQflag:
                     b1cCode = correlator.generatePilotBOC11(settings, PRN)
                 else:
@@ -435,8 +435,8 @@ class AcqEngine():
                 results = xp.abs(fftBackend.ifft(convCodeIQ))
 
                 if settings.pilotACQflag:
-                    # Pilot signal components; data and pilot powers are
-                    # combined with the configured 1:3 weighting.
+                    # Combine data and pilot correlation magnitudes
+                    # with weights 1:3.
                     convCodeIQ = IQfreqDom * pilotPriFreqDom
                     results = (results + 3*xp.abs(
                         fftBackend.ifft(convCodeIQ))) / 4
@@ -474,7 +474,7 @@ class AcqEngine():
             secondPeak = xp.max(results[codePhaseRange]).item()
             # Save code-phase acquisition result.
             self.codePhase[PRN - 1] = codePhaseMax
-            # Store the GLRT statistic.
+            # Store the primary-to-secondary correlation-peak ratio.
             self.peakMetric[PRN - 1] = peakMax / secondPeak
             # Store the searched PRN.
             self.PRN[PRN - 1] = PRN
@@ -484,7 +484,7 @@ class AcqEngine():
             if codePhaseMax + 20 * samplesPerCode > longSignal.size:
                 codePhaseMax -= samplesPerCode
 
-            # A GLRT statistic above the threshold indicates that the B1C
+            # A peak ratio above the threshold indicates that the B1C
             # signal has been found.
             if self.peakMetric[PRN - 1] > settings.acqThreshold:
                 #%% Fine resolution frequency search ======================
@@ -493,7 +493,7 @@ class AcqEngine():
                 print(f"{PRN:02d} ", end="", flush=True)
 
                 #--- Prepare 200 ms code, carrier and input signals --------
-                # Use the same branch selected for coarse acquisition.
+                # Use the pilot for assisted acquisition, otherwise the data.
                 if settings.pilotACQflag:
                     b1cCode = correlator.generatePilotBOC11(settings, PRN)
                 else:
@@ -501,8 +501,7 @@ class AcqEngine():
                 b1cCode = xp.asarray(b1cCode, dtype=realDataType)
                 b1cCode200ms = b1cCode[codeValueIndex]
                 
-                # Extract 20 B1C pilot periods (200 ms) from the detected
-                # B1C pilot code phase.
+                # Extract 20 B1C code periods (200 ms) at the detected phase.
                 sig200ms = longSignal[codePhaseMax:codePhaseMax + 20 * samplesPerCode]
                 
                 # Reusable 1 ms coarse-frequency local carrier.
@@ -589,9 +588,7 @@ class AcqEngine():
     def preRun(self):
         """Prepare tracking-channel priority from the acquisition results.
 
-        The acquired signals are sorted according to signal strength. This
-        function can be modified to use another satellite-selection algorithm
-        or to introduce acquired-signal property offsets for testing.
+        The results are sorted by decreasing correlation-peak ratio.
 
         Returns
         -------
@@ -599,7 +596,7 @@ class AcqEngine():
                 Acquisition-result arrays are reordered in place.
         """
         #--- Sort peaks and retain their index information ----------------
-        # Sort peaks to find the strongest signals and retain their indices.
+        # Sort peak ratios in descending order and retain their indices.
         PRNindexes = self.peakMetric.argsort()[::-1]
         self.peakMetric = self.peakMetric.take(PRNindexes)
         self.carrFreq = self.carrFreq.take(PRNindexes)

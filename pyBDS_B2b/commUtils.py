@@ -287,7 +287,7 @@ def calculatePseudoranges(trackResults, subFrameStart, TOW, currMeasSample,
         settings      - object
                       Receiver settings.
         searchIndex   - numpy.ndarray
-                      Per-channel search positions used by the Python port.
+                      Per-channel tracking-epoch search positions.
     Returns
     -------
         pseudoranges  - numpy.ndarray

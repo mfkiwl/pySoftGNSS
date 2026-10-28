@@ -82,8 +82,9 @@ class Channel:
         self.Q_P = np.zeros(numToProcess)
         self.Q_L = np.zeros(numToProcess)
         # Pilot-branch prompt correlator outputs.
-        self.Pilot_I_P = np.zeros(numToProcess)
-        self.Pilot_Q_P = np.zeros(numToProcess)
+        if settings.pilotTRKflag == 1:
+            self.Pilot_I_P = np.zeros(numToProcess)
+            self.Pilot_Q_P = np.zeros(numToProcess)
         # Loop discriminators.
         self.dllDiscr = np.full(numToProcess, np.inf)
         self.dllDiscrFilt = np.full(numToProcess, np.inf)
@@ -96,9 +97,10 @@ class Channel:
         cnoCount = numToProcess // settings.CNoVSMinterval
         self.DataCNo = np.zeros(cnoCount)
         self.DataPLD = np.zeros(cnoCount)
-        self.PilotCNo = np.zeros(cnoCount)
-        self.PilotPLD = np.zeros(cnoCount)
-        self.L2C_CNo = np.zeros(cnoCount)
+        if settings.pilotTRKflag == 1:
+            self.PilotCNo = np.zeros(cnoCount)
+            self.PilotPLD = np.zeros(cnoCount)
+            self.L2C_CNo = np.zeros(cnoCount)
 
 #%% Tracking engine
 class TrackingEngine():
@@ -128,12 +130,12 @@ class TrackingEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -227,7 +229,7 @@ class TrackingEngine():
             if settings.correlatorType == 1:
                 L2CCodeTable = np.asarray(L2CCodeTable, dtype=np.int32)
             elif settings.correlatorType == 2:
-                L2CCodeTable = np.asarray(L2CCodeTable, dtype=np.int8)
+                L2CCodeTable = np.asarray(L2CCodeTable, dtype=np.float32)
 
             #--- Perform various initializations --------------------------
             # Initial code and carrier NCO frequencies from acquisition.
@@ -331,8 +333,9 @@ class TrackingEngine():
 
                 # Data and pilot Early/Prompt/Late I/Q outputs.
                 I_E, Q_E, I_P, Q_P, I_L, Q_L = correValues[:6]
-                (pilot_I_E, pilot_Q_E, pilot_I_P, pilot_Q_P,
-                 pilot_I_L, pilot_Q_L) = correValues[6:12]
+                if settings.pilotTRKflag == 1:
+                    (pilot_I_E, pilot_Q_E, pilot_I_P, pilot_Q_P,
+                     pilot_I_L, pilot_Q_L) = correValues[6:12]
 
                 #--- Save and update variables for current correlation ----
                 # Save residual phases used by this correlation interval.
@@ -350,11 +353,12 @@ class TrackingEngine():
                     2 * np.pi)
 
                 #%% Find PLL error and update carrier NCO ==================
-                # Average the CM-data and CL-pilot prompt phase errors.
-                carrErrorQ = (np.arctan(pilot_Q_P / pilot_I_P) /
-                              (2.0 * np.pi))
                 carrError = np.arctan(Q_P / I_P) / (2.0 * np.pi)
-                carrError = (carrError + carrErrorQ) / 2
+                if settings.pilotTRKflag == 1:
+                    # Average the CM-data and CL-pilot prompt phase errors.
+                    carrErrorQ = (np.arctan(pilot_Q_P / pilot_I_P) /
+                                  (2.0 * np.pi))
+                    carrError = (carrError + carrErrorQ) / 2
 
                 # Second-order carrier-loop filter and NCO correction.
                 carrNco = (oldCarrNco + (tau2carr / tau1carr) * 
@@ -368,10 +372,11 @@ class TrackingEngine():
                 E = np.sqrt(I_E ** 2 + Q_E ** 2)
                 L = np.sqrt(I_L ** 2 + Q_L ** 2)
                 codeError = (E - L) / (E + L)
-                pilotE = np.sqrt(pilot_I_E ** 2 + pilot_Q_E ** 2)
-                pilotL = np.sqrt(pilot_I_L ** 2 + pilot_Q_L ** 2)
-                codeErrorQ = (pilotE - pilotL) / (pilotE + pilotL)
-                codeError = (codeError + codeErrorQ) / 2
+                if settings.pilotTRKflag == 1:
+                    pilotE = np.sqrt(pilot_I_E ** 2 + pilot_Q_E ** 2)
+                    pilotL = np.sqrt(pilot_I_L ** 2 + pilot_Q_L ** 2)
+                    codeErrorQ = (pilotE - pilotL) / (pilotE + pilotL)
+                    codeError = (codeError + codeErrorQ) / 2
 
                 # Second-order code-loop filter and NCO correction.
                 codeNco = (oldCodeNco + (tau2code / tau1code) * 
@@ -394,8 +399,9 @@ class TrackingEngine():
                 chResults.Q_P[loopCnt] = Q_P
                 chResults.Q_L[loopCnt] = Q_L
 
-                chResults.Pilot_I_P[loopCnt] = pilot_I_P
-                chResults.Pilot_Q_P[loopCnt] = pilot_Q_P
+                if settings.pilotTRKflag == 1:
+                    chResults.Pilot_I_P[loopCnt] = pilot_I_P
+                    chResults.Pilot_Q_P[loopCnt] = pilot_Q_P
 
                 #%% C/N0 calculation ======================================
                 if ((loopCnt + 1) % settings.CNoVSMinterval == 0):
@@ -410,13 +416,12 @@ class TrackingEngine():
                     
                     chResults.DataPLD[cnoCnt] = pllDetector[0]
                    
-                    chResults.PilotCNo[cnoCnt] = (CNoValue[1] * 0.5 
-                                                  + tempCNoValue[1] * 0.5)
-                    
-                    chResults.L2C_CNo[cnoCnt] = (CNoValue[2] * 0.5
-                                                 + tempCNoValue[2] * 0.5)
-                    
-                    chResults.PilotPLD[cnoCnt] = pllDetector[1]
+                    if settings.pilotTRKflag == 1:
+                        chResults.PilotCNo[cnoCnt] = (CNoValue[1] * 0.5
+                                                      + tempCNoValue[1] * 0.5)
+                        chResults.L2C_CNo[cnoCnt] = (CNoValue[2] * 0.5
+                                                     + tempCNoValue[2] * 0.5)
+                        chResults.PilotPLD[cnoCnt] = pllDetector[1]
                     
                 tempCNoValue = CNoValue.copy()
 
@@ -532,13 +537,13 @@ class TrackingEngine():
             # SIMD shares an int32 QPSK code table across all channels.
             L2CCodeTable = np.asarray(L2CCodeTable, dtype=np.int32)
         elif settings.correlatorType == 2:
-            # GPU shares an int8 QPSK code table across all channels.
-            L2CCodeTable = np.asarray(L2CCodeTable, dtype=np.int8)
+            # GPU shares a float32 QPSK code table across all channels.
+            L2CCodeTable = np.asarray(L2CCodeTable, dtype=np.float32)
 
         #%% Initialize waitbar and variables for data reading =============
         # Number of coherent L2C tracking intervals to process.
         numToProcess = trkResults[0].I_P.size
-        # Update the GUI less often for the faster compiled correlators.
+        # Update the GUI less often for compiled correlators.
         if settings.correlatorType == 0:
             # NumPy reference QPSK correlator.
             barUprate = 5
@@ -676,8 +681,9 @@ class TrackingEngine():
 
                 # CM and CL Early, Prompt, and Late outputs.
                 I_E, Q_E, I_P, Q_P, I_L, Q_L = correValues[:6, channelNr]
-                (pilot_I_E, pilot_Q_E, pilot_I_P, pilot_Q_P,
-                 pilot_I_L, pilot_Q_L) = correValues[6:12, channelNr]
+                if settings.pilotTRKflag == 1:
+                    (pilot_I_E, pilot_Q_E, pilot_I_P, pilot_Q_P,
+                     pilot_I_L, pilot_Q_L) = correValues[6:12, channelNr]
 
                 # Save the phases used for this correlation, then advance them
                 # to the next L2C coherent integration interval.
@@ -694,9 +700,10 @@ class TrackingEngine():
 
                 #%% Find PLL error and update carrier NCO ------------------
                 carrError = np.arctan(Q_P / I_P) / (2.0 * np.pi)
-                carrErrorQ = (np.arctan(pilot_Q_P / pilot_I_P) /
-                              (2.0 * np.pi))
-                carrError = (carrError + carrErrorQ) / 2
+                if settings.pilotTRKflag == 1:
+                    carrErrorQ = (np.arctan(pilot_Q_P / pilot_I_P) /
+                                  (2.0 * np.pi))
+                    carrError = (carrError + carrErrorQ) / 2
 
                 # PLL filter output and carrier-NCO correction [Hz].
                 carrNco = (oldCarrNco[channelNr]+ (tau2carr / tau1carr)
@@ -713,10 +720,11 @@ class TrackingEngine():
                 E = np.sqrt(I_E ** 2 + Q_E ** 2)
                 L = np.sqrt(I_L ** 2 + Q_L ** 2)
                 codeError = (E - L) / (E + L)
-                pilotE = np.sqrt(pilot_I_E ** 2 + pilot_Q_E ** 2)
-                pilotL = np.sqrt(pilot_I_L ** 2 + pilot_Q_L ** 2)
-                codeErrorQ = (pilotE - pilotL) / (pilotE + pilotL)
-                codeError = (codeError + codeErrorQ) / 2
+                if settings.pilotTRKflag == 1:
+                    pilotE = np.sqrt(pilot_I_E ** 2 + pilot_Q_E ** 2)
+                    pilotL = np.sqrt(pilot_I_L ** 2 + pilot_Q_L ** 2)
+                    codeErrorQ = (pilotE - pilotL) / (pilotE + pilotL)
+                    codeError = (codeError + codeErrorQ) / 2
 
                 # DLL filter output and code-NCO correction [chips/s].
                 codeNco = (oldCodeNco[channelNr] + (tau2code / tau1code)
@@ -746,8 +754,9 @@ class TrackingEngine():
                 chResults.Q_P[loopCnt] = Q_P
                 chResults.Q_L[loopCnt] = Q_L
 
-                chResults.Pilot_I_P[loopCnt] = pilot_I_P
-                chResults.Pilot_Q_P[loopCnt] = pilot_Q_P
+                if settings.pilotTRKflag == 1:
+                    chResults.Pilot_I_P[loopCnt] = pilot_I_P
+                    chResults.Pilot_Q_P[loopCnt] = pilot_Q_P
 
                 #%% C/N0 calculation --------------------------------------
                 # Periodically estimate data, pilot, and combined L2C C/N0,
@@ -765,12 +774,12 @@ class TrackingEngine():
                     
                     chResults.DataPLD[cnoCnt] = pllDetector[0]
                     
-                    chResults.PilotCNo[cnoCnt] = (currentCNoValue[1] * 0.5
-                        + cnoSmoothState[channelNr, 1] * 0.5)
-                    
-                    chResults.L2C_CNo[cnoCnt] = (currentCNoValue[2] * 0.5
-                                         + cnoSmoothState[channelNr, 2] * 0.5)
-                    chResults.PilotPLD[cnoCnt] = pllDetector[1]
+                    if settings.pilotTRKflag == 1:
+                        chResults.PilotCNo[cnoCnt] = (currentCNoValue[1] * 0.5
+                            + cnoSmoothState[channelNr, 1] * 0.5)
+                        chResults.L2C_CNo[cnoCnt] = (currentCNoValue[2] * 0.5
+                                             + cnoSmoothState[channelNr, 2] * 0.5)
+                        chResults.PilotPLD[cnoCnt] = pllDetector[1]
 
                     if channelNr == 0:
                         CNoValue = currentCNoValue

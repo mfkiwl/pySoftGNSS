@@ -26,7 +26,7 @@ Copyright (C) 2026 Yafeng Li.
 
 correlator.py - Module Description
 ----------------------------------
-Generate, sample, and correlate Galileo E1B/E1C CBOC codes.
+Generate, sample, and correlate Galileo E1B/E1C CBOC or BOC(1,1) codes.
 
 """
 
@@ -111,16 +111,18 @@ class CorrSIMDSerialQPSK:
                         interleaved I/Q values.
             E1CodeTable - numpy.ndarray
                         Concatenated guarded int32 E1B/E1C codes:
-                        ``[E1B(last, period, first),
-                        E1C(last, period, first)]``.
+                        ``[E1B(last12, period, first12),
+                        E1C(last12, period, first12)]``.
             remCarrPhase - float
                          Residual carrier phase in radians.
             carrPhaseStep - float
                           Carrier phase increment in radians per sample.
             remCodePhase - float
-                         Residual code phase in chips.
+                         Code phase on the 12-subchip grid, including the
+                         caller's +11 offset for the leading guard.
             codePhaseStep - float
-                          Code phase increment in chips per sample.
+                          Code-grid increment per IF sample (12 points
+                          per primary chip).
         Returns
         -------
             correValues - numpy.ndarray
@@ -165,15 +167,15 @@ class CorrGPUSerialQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Vector = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=1, flags="C_CONTIGUOUS")
+        float32Vector = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
         self._gpuLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Vector,       # E1CodeTable
+            float32Vector,    # E1CodeTable
             ctypes.c_int,     # E1CodeTable.size // 2
             ctypes.c_double,  # remCarrPhase
             ctypes.c_double,  # carrPhaseStep
@@ -199,17 +201,19 @@ class CorrGPUSerialQPSK:
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             E1CodeTable - numpy.ndarray
-                        Concatenated guarded int8 E1B/E1C codes:
-                        ``[E1B(last, period, first),
-                        E1C(last, period, first)]``.
+                        Concatenated guarded float32 E1B/E1C codes:
+                        ``[E1B(last12, period, first12),
+                        E1C(last12, period, first12)]``.
             remCarrPhase - float
                          Residual carrier phase in radians.
             carrPhaseStep - float
                           Carrier phase increment in radians per sample.
             remCodePhase - float
-                         Residual code phase in chips.
+                         Code phase on the 12-subchip grid, including the
+                         caller's +11 offset for the leading guard.
             codePhaseStep - float
-                          Code phase increment in chips per sample.
+                          Code-grid increment per IF sample (12 points
+                          per primary chip).
             PRN         - int
                         Current satellite PRN used for code caching.
 
@@ -311,14 +315,17 @@ class CorrSIMDParallelQPSK:
             E1CodeTable - numpy.ndarray
                         C-contiguous int32 table containing concatenated
                         guarded E1B/E1C code branches for every channel.
+                        Each branch has 12 guard points at each end.
             remCarrPhase - numpy.ndarray
                          Initial carrier phases in radians.
             carrPhaseStep - numpy.ndarray
                           Carrier phase increments in radians per sample.
             remCodePhase - numpy.ndarray
-                         Initial code phases in chips.
+                         Code phases on the 12-subchip grid, including the
+                         caller's +11 offset for the leading guard.
             codePhaseStep - numpy.ndarray
-                          Code phase increments in chips per sample.
+                          Code-grid increments per IF sample (12 points
+                          per primary chip).
             startIdx    - numpy.ndarray
                         Zero-based logical sample offsets in the shared
                         signal block.
@@ -386,8 +393,8 @@ class CorrGPUParallelQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Table = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=2, flags="C_CONTIGUOUS")
+        float32Table = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
         float64Vector = np.ctypeslib.ndpointer(
@@ -398,7 +405,7 @@ class CorrGPUParallelQPSK:
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Table,        # E1CodeTable
+            float32Table,     # E1CodeTable
             ctypes.c_int,     # codeLen
             ctypes.c_int,     # channelCnt
             float64Vector,    # remCarrPhase
@@ -427,16 +434,19 @@ class CorrGPUParallelQPSK:
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             E1CodeTable - numpy.ndarray
-                        C-contiguous int8 table containing concatenated
+                        C-contiguous float32 table containing concatenated
                         guarded E1B/E1C code branches for every channel.
+                        Each branch has 12 guard points at each end.
             remCarrPhase - numpy.ndarray
                          Residual carrier phases in radians.
             carrPhaseStep - numpy.ndarray
                           Carrier phase increments in radians per sample.
             remCodePhase - numpy.ndarray
-                         Residual code phases in chips.
+                         Code phases on the 12-subchip grid, including the
+                         caller's +11 offset for the leading guard.
             codePhaseStep - numpy.ndarray
-                          Code phase increments in chips per sample.
+                          Code-grid increments per IF sample (12 points
+                          per primary chip).
             startIdx    - numpy.ndarray
                         Zero-based logical sample offsets in ``rawSignal``.
             chSampSize  - numpy.ndarray
@@ -497,15 +507,18 @@ def corrPySerialQPSK(settings, rawSignal, E1CodeTable, remCarrPhase,
                       represented by interleaved I and Q values.
         E1CodeTable - numpy.ndarray
                       Guarded local-code vector containing the E1B data and
-                      E1C pilot codes in that order.
+                      E1C pilot codes in that order. Each branch has 12
+                      guard points at each end.
         remCarrPhase - float
                       Residual carrier phase in radians.
         carrPhaseStep - float
                        Carrier phase increment in radians per sample.
         remCodePhase - float
-                      Residual primary-code phase in chips.
+                      Code phase on the 12-subchip grid, including the
+                      caller's +11 offset for the leading guard.
         codePhaseStep - float
-                       Code-phase increment in chips per IF sample.
+                       Code-grid increment per IF sample (12 points
+                       per primary chip).
     Returns
     -------
         correValues   - ndarray
@@ -517,7 +530,7 @@ def corrPySerialQPSK(settings, rawSignal, E1CodeTable, remCarrPhase,
     codeLen = E1CodeTable.size // 2
     E1CodeD = E1CodeTable[:codeLen]
     E1CodeP = E1CodeTable[codeLen:]
-    # Define early-late offset in chips.
+    # Early-late offset on the 12-point-per-primary-chip local-code grid.
     earlyLateSpc = settings.dllCorrelatorSpacing
 
     # Allocate the E1B data and E1C pilot outputs.
@@ -533,8 +546,7 @@ def corrPySerialQPSK(settings, rawSignal, E1CodeTable, remCarrPhase,
     # Time index for each sampling point.
     sampleInd = np.arange(blksize)
     codeInd = sampleInd * codePhaseStep
-    # Python uses zero-based indices, so MATLAB's trailing +1 local-code
-    # offset is not required below.
+    # Local-code table indices are zero-based.
 
     # Define index into early code vectors.
     tcode = remCodePhase - earlyLateSpc + codeInd
@@ -590,8 +602,7 @@ def corrPyParallelQPSK(settings, rawSignal, E1CodeTable, remCarrPhase,
                        startIdx, chSampSize, isDataRead):
     """Correlate all active E1 channels against one shared IF block.
 
-    This function has the same calling interface as the SIMD and GPU
-    correlators. Each output column is ordered as
+    Each output column is ordered as
     ``[I_E, Q_E, I_P, Q_P, I_L, Q_L, pilot_I_E, pilot_Q_E,
     pilot_I_P, pilot_Q_P, pilot_I_L, pilot_Q_L]``.
 
@@ -605,22 +616,24 @@ def corrPyParallelQPSK(settings, rawSignal, E1CodeTable, remCarrPhase,
                       interleaved I and Q values.
         E1CodeTable - numpy.ndarray
                       One guarded E1B/E1C local-code row for each active
-                      channel.
+                      channel; each branch has 12 guard points at each end.
         remCarrPhase - ndarray
                       Residual carrier phase for each channel, in radians.
         carrPhaseStep - ndarray
                        Carrier phase increment for each channel, in radians
                        per sample.
         remCodePhase - ndarray
-                      Residual code phase for each channel.
+                      Code phases on the 12-subchip grid, including the
+                      caller's +11 offset for the leading guard.
         codePhaseStep - ndarray
-                       Code-phase increment for each channel.
+                       Code-grid increments per IF sample (12 points
+                       per primary chip).
         startIdx     - ndarray
                       Start sample of each channel within ``rawSignal``.
         chSampSize   - ndarray
                       Number of samples in each channel's code period.
         isDataRead   - int
-                      Shared-data refresh flag retained for interface parity.
+                      Unused here; samples are read directly from rawSignal.
     Returns
     -------
         correValues   - ndarray
@@ -638,7 +651,7 @@ def corrPyParallelQPSK(settings, rawSignal, E1CodeTable, remCarrPhase,
     # Output order per channel contains data and pilot values. Each group of
     # six is [I_E, Q_E, I_P, Q_P, I_L, Q_L].
     correValues = np.zeros((12, channelCnt), dtype=np.float64)
-    # Define early-late offset in primary-code chips.
+    # Early-late offset on the 12-point-per-primary-chip local-code grid.
     earlyLateSpc = settings.dllCorrelatorSpacing
 
     for channelNr in range(channelCnt):
@@ -678,8 +691,7 @@ def corrPyParallelQPSK(settings, rawSignal, E1CodeTable, remCarrPhase,
         lateCodeD = E1CodeD[tcode]
         lateCodeP = E1CodeP[tcode]
 
-        # Define index into Prompt code vectors. Python uses zero-based
-        # indices, so MATLAB's trailing +1 index offset is not required.
+        # Define zero-based indices into the Prompt code vectors.
         tcode = np.ceil(codePhase).astype(np.int32)
         promptCodeD = E1CodeD[tcode]
         promptCodeP = E1CodeP[tcode]
@@ -719,20 +731,24 @@ def corrPyParallelQPSK(settings, rawSignal, E1CodeTable, remCarrPhase,
 
 #%% Galileo E1B-code generation --------------------------------------------
 @lru_cache(maxsize=50)
-def generateDataCode(PRN, flag=1):
-    """Generate a Galileo E1B data-channel CBOC(+) code.
+def generateDataCode(PRN, codeType):
+    """Generate Galileo E1B CBOC(+) or BOC(1,1) code for PRNs 1 to 50.
+
+    Both code types use 12 samples per primary-code chip. The primary
+    memory codes are stored in the file E1b.dat.
 
     Args
     ----
         PRN         - int
                      PRN number of the sequence.
-        flag        - int
-                     Kept for the common code-generator interface.
+        codeType    - str
+                     'CBOC' for full-band CBOC(+), or 'BOC11' for
+                     narrowband BOC(1,1).
 
     Returns
     -------
         E1Bcode     - ndarray
-                     E1B CBOC(+) sequence on the 12-subchip grid.
+                     E1B waveform with 4092 * 12 samples per primary-code period.
     """
     #--- Generate the primary code ---------------------------------------
     PRIMARY_CODE_LENGTH = 4092
@@ -742,15 +758,23 @@ def generateDataCode(PRN, flag=1):
             "./result_Cache/E1b.dat", dtype=np.int8).reshape(
                 NUM_GAL_PRNS, PRIMARY_CODE_LENGTH)
     allprncode = generateDataCode.codeTable
-    # Python uses zero-based rows; MATLAB selects the PRN-th code row.
+    # Select the row for this PRN.
     e1b_primary_code = allprncode[int(PRN)-1]
     e1bCodeRaw = 1-2*e1b_primary_code
 
-    #--- CBOC(+) implementation for data channel -------------------------
-    plus0 = np.sqrt(10/11)+np.sqrt(1/11)
-    plus1 = np.sqrt(10/11)-np.sqrt(1/11)
-    minus0 = -np.sqrt(10/11)+np.sqrt(1/11)
-    minus1 = -np.sqrt(10/11)-np.sqrt(1/11)
+    #--- Select the E1B data subcarrier waveform --------------------------
+    # 'CBOC' uses CBOC(+); 'BOC11' uses BOC(1,1) on the same 12-point grid.
+    if codeType == 'CBOC':
+        plus0 = np.sqrt(10/11)+np.sqrt(1/11)
+        plus1 = np.sqrt(10/11)-np.sqrt(1/11)
+        minus0 = -np.sqrt(10/11)+np.sqrt(1/11)
+        minus1 = -np.sqrt(10/11)-np.sqrt(1/11)
+    elif codeType == 'BOC11':
+        plus0 = 1.0
+        plus1 = 1.0
+        minus0 = -1.0
+        minus1 = -1.0
+    # Apply the selected 12-point subcarrier template to each primary chip.
     boc61Wave = np.array([
         plus0,plus1,plus0,plus1,plus0,plus1,
         minus0,minus1,minus0,minus1,minus0,minus1])
@@ -761,20 +785,24 @@ def generateDataCode(PRN, flag=1):
 
 #%% Galileo E1C-code generation --------------------------------------------
 @lru_cache(maxsize=50)
-def generatePilotCode(PRN, flag=1):
-    """Generate a Galileo E1C pilot-channel CBOC(-) code.
+def generatePilotCode(PRN, codeType):
+    """Generate Galileo E1C CBOC(-) or BOC(1,1) code for PRNs 1 to 50.
+
+    Both code types use 12 samples per primary-code chip. The primary
+    memory codes are stored in the file E1c.dat.
 
     Args
     ----
         PRN         - int
                      PRN number of the sequence.
-        flag        - int
-                     1: primary code. The tracking chain uses this mode.
+        codeType    - str
+                     'CBOC' for full-band CBOC(-), or 'BOC11' for
+                     narrowband BOC(1,1).
 
     Returns
     -------
         E1Ccode     - ndarray
-                     E1C CBOC(-) sequence on the 12-subchip grid.
+                     E1C waveform with 4092 * 12 samples per primary-code period.
     """
     #--- Generate the primary code ---------------------------------------
     PRIMARY_CODE_LENGTH = 4092
@@ -784,15 +812,23 @@ def generatePilotCode(PRN, flag=1):
             "./result_Cache/E1c.dat", dtype=np.int8).reshape(
                 NUM_GAL_PRNS, PRIMARY_CODE_LENGTH)
     allprncode = generatePilotCode.codeTable
-    # Python uses zero-based rows; MATLAB selects the PRN-th code row.
+    # Select the row for this PRN.
     e1b_primary_code = allprncode[int(PRN)-1]
     e1cCodeRaw = 1-2*e1b_primary_code
 
-    #--- CBOC(-) implementation for pilot channel ------------------------
-    plus0 = np.sqrt(10/11)+np.sqrt(1/11)
-    plus1 = np.sqrt(10/11)-np.sqrt(1/11)
-    minus0 = -np.sqrt(10/11)+np.sqrt(1/11)
-    minus1 = -np.sqrt(10/11)-np.sqrt(1/11)
+    #--- Select the E1C pilot subcarrier waveform --------------------------
+    # 'CBOC' uses CBOC(-); 'BOC11' uses BOC(1,1) on the same 12-point grid.
+    if codeType == 'CBOC':
+        plus0 = np.sqrt(10/11)+np.sqrt(1/11)
+        plus1 = np.sqrt(10/11)-np.sqrt(1/11)
+        minus0 = -np.sqrt(10/11)+np.sqrt(1/11)
+        minus1 = -np.sqrt(10/11)-np.sqrt(1/11)
+    elif codeType == 'BOC11':
+        plus0 = 1.0
+        plus1 = 1.0
+        minus0 = -1.0
+        minus1 = -1.0
+    # Apply the selected 12-point subcarrier template to each primary chip.
     boc61Wave = np.array([
         plus1,plus0,plus1,plus0,plus1,plus0,
         minus1,minus0,minus1,minus0,minus1,minus0])
@@ -803,7 +839,10 @@ def generatePilotCode(PRN, flag=1):
 
 #%% Galileo E1B/E1C-code sampling ------------------------------------------
 def codeSampling(settings, PRN, sampleLen, component):
-    """Generate and sample one Galileo E1 spreading waveform.
+    """Generate and sample one Galileo E1 BOC(1,1) waveform for acquisition.
+
+    The code is digitized at the sampling frequency specified in settings.
+    Both CPU and GPU acquisition use BOC(1,1), independently of fullBandEn.
 
     Args
     ----
@@ -819,21 +858,22 @@ def codeSampling(settings, PRN, sampleLen, component):
     Returns
     -------
         codeSamples   - numpy.ndarray
-                      Sampled E1 spreading waveform.
+                      Sampled E1B or E1C BOC(1,1) spreading waveform.
     """
-    #--- Generate the selected E1 spreading waveform -----------------------
+    #--- Generate E1B/E1C BOC(1,1) code for the given PRN --------------------
     if component == "data":
-        code = generateDataCode(int(PRN))
+        code = generateDataCode(int(PRN), 'BOC11')
     elif component == "pilot":
-        code = generatePilotCode(int(PRN))
+        code = generatePilotCode(int(PRN), 'BOC11')
     else:
         raise ValueError(f"Invalid E1 component: {component}")
 
     #=== Digitizing =========================================================
     #--- Make the index array used to read E1 code values -------------------
+    ts = 1 / settings.samplingFreq
+    tc = 1 / settings.codeFreqBasis / 12
     codeValueIndex = np.ceil(
-        np.arange(1, sampleLen + 1, dtype=np.float64) * code.size /
-        settings.samplesPerCode).astype(np.int32) - 1
+        (ts * np.arange(1, sampleLen + 1, dtype=np.float64)) / tc).astype(np.int32) - 1
 
     #--- Correct the first and last indices due to rounding -----------------
     codeValueIndex[0] = 0

@@ -46,8 +46,8 @@ class Settings(object):
             None
         """
         #%% Processing settings ===============================================
-        # Process at least 58 s plus tracking transients so complete CNAV
-        # messages are available to navigation decoding.
+        # Navigation decoding requires at least 60 s to cover four complete
+        # 12 s CNAV message slots after an arbitrary recording start.
         self.msToProcess         = 58000          #[ms]
         # Maximum number of channels used for signal processing.
         self.numberOfChannels    = 10
@@ -364,7 +364,7 @@ class Settings(object):
             print('Tracking started at ',startTime.strftime("%Y-%m-%d %H:%M:%S"))
 
             # Run channel-serial or channel-parallel tracking according to
-            # trkMode. The tracking results are retained by the engine.
+            # trkMode; results are stored in trackingEngine.trackResults.
             import tracking
             trackingEngine = tracking.TrackingEngine(self)
             trackingEngine.trackingRun(acqResults)

@@ -51,16 +51,15 @@ class Settings(object):
             None
         """
         #%% Processing settings ===============================================
-        # Process at least 36 s plus tracking transients so complete CNAV-2
-        # frames are available to navigation decoding.
+        # Allow 36 s to cover a complete 18 s CNAV-2 frame from an arbitrary
+        # start, plus time for tracking transients.
         self.msToProcess         = 40000          #[ms]
         # Maximum number of channels used for signal processing.
         self.numberOfChannels    = 15
         # Move the starting point of processing. Can be used to start the
         # signal processing at any point in the data record (e.g. for long
-        # records). fseek function is used to move the file read point,
-        # therefore the offset is expressed in logical time samples, not
-        # directly in bytes. I/Q files contain two scalar values per sample.
+        # records). The offset is in logical samples, not bytes, and is
+        # converted to bytes before seek. I/Q files store two scalars per sample.
         self.skipNumberOfSamples        = 0
 
         #%% Raw signal file name and related parameters =======================
@@ -75,20 +74,20 @@ class Settings(object):
         # Intermediate and sampling frequencies.
         self.IF                 = 0.0              # [Hz]
         self.samplingFreq       = 25.0e6           # [Hz]
-        # Front-end bandwidth used by wideband-tracking weighting factors.
+        # Two-sided front-end bandwidth used by the composite DLL weighting.
         self.FEBW               = 27.0e6           # [Hz]
 
         #%% L1C code parameters ==============================================
         # Nominal rate of the L1C primary code.
         self.codeFreqBasis      = 1.023e6         # [Hz]
-        # Number of chips in one L1C primary-code period.
+        # Number of primary-code chips in one 10 ms L1C code period.
         self.codeLength         = 10230            # [Chips]
         # Carrier center frequency.
         self.carrFreqBasis      = 1575.42e6        # [Hz]
 
         #%% CNAV-2 LDPC decoder settings =====================================
-        # Min-Sum decoder options. Set the offset to zero for standard
-        # Min-Sum decoding.
+        # Positive offset selects offset Min-Sum. With zero offset,
+        # 0 < alpha < 1 selects normalized Min-Sum; alpha = 1 selects standard.
         self.ldpcMaxIterations  = 50
         self.ldpcMsAlpha        = 1.0
         self.ldpcMsOffset       = 0.2
@@ -109,7 +108,7 @@ class Settings(object):
         self.acqThreshold       = 2.0
         # Frequency search step for coarse acquisition
         self.acqSearchStep      = 50                 # [Hz]
-        # Enable acquisition using the pilot component.
+        # False: data-only acquisition; True: data/pilot combination (1:3).
         self.pilotACQflag       = True
 
         #%% Tracking loops settings ===========================================
@@ -133,14 +132,20 @@ class Settings(object):
         # Code tracking loop parameters
         self.dllDampingRatio        = 0.7
         self.dllNoiseBandwidth      = 1.0         # [Hz]
+        # Early/late offsets from Prompt in primary-code chips. Tracking
+        # converts these offsets to the 12-point-per-chip correlator grid.
         self.dllCorrelatorSpacing   = 0.07        # [primary-code chip]
         # Carrier tracking loop parameters
         self.pllDampingRatio        = 0.7
         self.pllNoiseBandwidth      = 10.         # [Hz]
-        # Integration time for DLL and PLL
+        # DLL/PLL integration interval: one 10 ms primary-code period.
         self.intTime                = 0.01        # [s]
-        # Enable tracking using the pilot component.
+        # False: data-only PLL/DLL; True: joint data/pilot PLL/DLL.
+        # Pilot prompt outputs are retained for CNAV-2 frame synchronization.
         self.pilotTRKflag           = True
+
+        # Pilot local code: full TMBOC, or BOC(1,1) with BOC(6,1) positions zeroed.
+        self.fullBandEn             = 1           # 0 - Narrowband; 1 - Full band
 
         #%% Navigation solution settings ======================================
         # When enabled, restore saved navigation output instead of computing it.
@@ -193,7 +198,7 @@ class Settings(object):
         Returns
         -------
             samplesPerCode - int
-                           Rounded number of samples in one L1C-code period.
+                           Rounded number of samples in one 10 ms L1C period.
         """
         # Find the number of samples per spreading code.
         return round(self.samplingFreq/(self.codeFreqBasis / self.codeLength))

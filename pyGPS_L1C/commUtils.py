@@ -107,7 +107,7 @@ def calcLoopCoef(LBW, zeta, k):
     Args
     ----
         LBW         - float
-                    Loop noise bandwidth.
+                    Loop noise bandwidth in hertz.
         zeta        - float
                     Damping ratio.
         k           - float
@@ -131,16 +131,16 @@ def CNoVSM(I, Q, T):
 
     Args
     ----
-        I           - array-like
+        I           - numpy.ndarray
                     Prompt in-phase values from tracking.
-        Q           - array-like
+        Q           - numpy.ndarray
                     Prompt quadrature values from tracking.
         T           - float
                     Tracking accumulation interval in seconds.
     Returns
     -------
         CNo         - float
-                    Estimated C/N0 for the supplied I and Q values.
+                    Estimated C/N0 in dB-Hz for the supplied I and Q values.
     """
     # Calculate prompt power.
     Z = I**2+Q**2
@@ -176,8 +176,10 @@ def calcCNoPld(chResults, settings, loopCnt):
     -------
         CNo         - numpy.ndarray
                     Data, pilot, and whole-signal L1C C/N0 in dB-Hz.
+                    With pilotTRKflag=0: [data, 0, data].
         pllDetector - numpy.ndarray
                     PLL lock-detector outputs for data and pilot channels.
+                    The pilot output is zero when pilot assistance is disabled.
     """
     CNo = np.zeros(3)
     pllDetector = np.zeros(2)
@@ -197,17 +199,18 @@ def calcCNoPld(chResults, settings, loopCnt):
     pllDetector[0] = NBD / NBP
 
     #--- C/N0 and PLL-detector estimates for the pilot channel -----------
-    # MATLAB uses the quadrature-rotated prompt orientation in the normal
-    # L1C pilot-tracking mode.
-    Q_P = chResults.Pilot_I_P[firstIndex:lastIndex]
-    I_P = chResults.Pilot_Q_P[firstIndex:lastIndex]
-    pilotCNo = 10 ** (CNoVSM(I_P, Q_P, T) / 10)
-    CNo[1] = 10 * np.log10(pilotCNo)
-    NBP = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
-           + np.sum(Q_P) ** 2)
-    NBD = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
-           - np.sum(Q_P) ** 2)
-    pllDetector[1] = NBD / NBP
+    pilotCNo = 0
+    if settings.pilotTRKflag == 1:
+        # Pilot Q supplies the in-phase component of the lock detector.
+        Q_P = chResults.Pilot_I_P[firstIndex:lastIndex]
+        I_P = chResults.Pilot_Q_P[firstIndex:lastIndex]
+        pilotCNo = 10 ** (CNoVSM(I_P, Q_P, T) / 10)
+        CNo[1] = 10 * np.log10(pilotCNo)
+        NBP = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
+               + np.sum(Q_P) ** 2)
+        NBD = ((np.sum(I_P[I_P > 0]) - np.sum(I_P[I_P < 0])) ** 2
+               - np.sum(Q_P) ** 2)
+        pllDetector[1] = NBD / NBP
 
     #--- C/N0 estimate for the whole L1C signal --------------------------
     CNo[2] = 10 * np.log10(dataCNo + pilotCNo)
@@ -218,8 +221,8 @@ def calcCNoPld(chResults, settings, loopCnt):
 def calcWeighingFactor(settings):
     """Calculate the data-channel weight for the composite code error.
 
-    The weighting factor is used to construct the composite code-tracking
-    error in full-band tracking mode.
+    Combine the BOC(1,1) data and TMBOC pilot code errors using their
+    front-end passband powers, RMS bandwidths and nominal 1:3 power ratio.
 
     Args
     ----
@@ -233,10 +236,10 @@ def calcWeighingFactor(settings):
     """
     from scipy.integrate import quad
 
-    # Code frequency and code-chip length.
+    # Primary-code frequency [Hz] and chip period [s].
     fc = settings.codeFreqBasis
     Tc = 1 / fc
-    # Front-end bandwidth.
+    # Two-sided front-end bandwidth [Hz].
     Br = settings.FEBW
 
     #--- Power ratio and RMS bandwidth of the data channel ---------------
@@ -269,6 +272,7 @@ def calcWeighingFactor(settings):
     REM_BW_pilot = np.sqrt(Power_pilot_2 / Power_pilot)
 
     #--- Calculate the weighting factor ----------------------------------
+    # The factors 11 and 33 retain the nominal data/pilot power ratio 1:3.
     temp1 = 11 * Power_BOC1_1 * REM_BW_BOC_1_1 ** 2
     temp2 = 33 * Power_pilot * REM_BW_pilot ** 2
     return temp1 / (temp1 + temp2)
@@ -283,10 +287,10 @@ def skyPlot(hAxis, az, el, prn, line_style="auto"):
         hAxis      - matplotlib.axes.Axes
                    Axes that receive the sky plot.
         az         - array-like
-                   Satellite azimuth angles. Each row contains one satellite
+                   Satellite azimuth angles [degrees]. Each row is one satellite
                    and the columns contain calculated azimuth values.
         el         - array-like
-                   Satellite elevation angles arranged like ``az``.
+                   Satellite elevation angles [degrees], arranged like ``az``.
         prn        - array-like
                    PRN numbers of the satellites.
         line_style - str
@@ -303,7 +307,6 @@ def skyPlot(hAxis, az, el, prn, line_style="auto"):
 
     #%% Prepare axis ==========================================================
     #--- Plot white background and horizon ------------------------------------
-    # Prepare the axes and plot the white background with the horizon.
     hAxis.set_facecolor("white")
     th = np.linspace(0, 2*np.pi, 101)
     xunit = np.cos(th)
@@ -338,7 +341,6 @@ def skyPlot(hAxis, az, el, prn, line_style="auto"):
     #%% Transform elevation to distance from the plot centre ==================
     elSpherical = 90*np.cos(np.deg2rad(el))
     #--- Transform data to Cartesian coordinates ------------------------------
-    # Transform the azimuth/elevation data to Cartesian sky-view coordinates.
     xx = elSpherical*np.sin(np.deg2rad(az))
     yy = elSpherical*np.cos(np.deg2rad(az))
 
@@ -349,9 +351,7 @@ def skyPlot(hAxis, az, el, prn, line_style="auto"):
     hpol = hAxis.plot(xx.T, yy.T, line_style, zorder=2)
 
     #--- Mark and label the latest satellite position -------------------------
-    # Mark and label the latest valid position of every satellite. The
-    # leading blank in the label places the PRN beside the final point and
-    # keeps a constant visual offset when the plot is zoomed.
+    # Mark the latest valid satellite positions and offset their PRN labels.
     for i in range(len(prn)):
         valid = np.isfinite(xx[i]) & np.isfinite(yy[i])
         if prn[i] != 0 and np.any(valid):
@@ -369,7 +369,6 @@ def skyPlot(hAxis, az, el, prn, line_style="auto"):
     hAxis.set_xlim(-95, 95)
     hAxis.set_ylim(-90, 101)
     #--- Keep equal aspect ratio and hide Cartesian axes ----------------------
-    # Preserve equal data aspect ratio and hide the Cartesian axes.
     hAxis.set_aspect("equal")
     hAxis.axis("off")
     return hpol
@@ -393,25 +392,25 @@ def calculatePseudoranges(trackResults, subFrameStart, TOW, currMeasSample,
         TOW           - array-like
                       Time of week of the first subframe, in seconds.
         currMeasSample - int
-                       Current measurement sample location.
+                       Zero-based measurement location in logical samples.
         localTime     - float or None
-                      Local GPST at the measurement time.
+                      Local GPST at the measurement time [s].
         channelList   - sequence
                       Channels to process.
         settings      - object
                       Receiver settings.
         searchIndex   - numpy.ndarray
-                      Per-channel search positions used by the Python port.
+                      Cached per-channel search positions, updated in place.
     Returns
     -------
         pseudoranges  - numpy.ndarray
-                      Relative pseudoranges to the satellites.
+                      Relative pseudoranges to the satellites [m].
         transmitTime  - numpy.ndarray
-                      Transmitting times at the measurement time.
+                      Signal transmitting GPST values [s].
         localTime     - float
-                      Local GPST at the measurement time.
+                      Local GPST at the measurement time [s].
         carrFreqPerSat - numpy.ndarray
-                       Carrier frequencies at the measurement time.
+                       Carrier frequencies at the measurement time [Hz].
     """
     # Transmitting time and carrier frequency of all channels at the current
     # measurement-sample location.
@@ -469,13 +468,13 @@ def e_r_corr(traveltime, X_sat):
     Args
     ----
         traveltime  - float
-                    Signal travel time.
+                    Signal travel time in seconds.
         X_sat       - array-like
-                    Satellite ECEF coordinates.
+                    Satellite ECEF coordinates at transmission time [m].
     Returns
     -------
         X_sat_rot   - numpy.ndarray
-                    Rotated satellite ECEF coordinates.
+                    Satellite coordinates in the receive-time ECEF frame [m].
     """
     # Earth rotation rate [rad/s].
     Omegae_dot = 7.292115147e-5
@@ -725,15 +724,16 @@ def leastSquarePos(satpos, obs, settings):
     Args
     ----
         satpos      - numpy.ndarray
-                    Satellite ECEF positions, one satellite per column.
+                    Satellite ECEF positions [m], one satellite per column.
         obs         - array-like
-                    Pseudoranges corrected for satellite clock error.
+                    Pseudoranges corrected for satellite clock error [m].
         settings    - object
                     Receiver settings.
     Returns
     -------
         pos         - numpy.ndarray
-                    Receiver ECEF position and clock error ``[X, Y, Z, dt]``.
+                    Receiver ECEF position and clock bias ``[X, Y, Z, dt]``;
+                    all four values are in metres.
         el          - numpy.ndarray
                     Satellite elevation angles in degrees.
         az          - numpy.ndarray
@@ -990,17 +990,17 @@ def cart2utm(X, Y, Z, zone):
     Args
     ----
         X, Y, Z     - float
-                    Cartesian coordinates referenced to ITRF96.
+                    Cartesian coordinates referenced to ITRF96, in metres.
         zone        - int
                     UTM zone of the position.
     Returns
     -------
         E           - float
-                    UTM easting.
+                    ED50/UTM easting in metres.
         N           - float
-                    UTM northing.
+                    ED50/UTM northing in metres.
         U           - float
-                    UTM up coordinate.
+                    ED50 ellipsoidal height in metres, not local ENU up.
     """
     from math import atan2, atanh
 
@@ -1097,7 +1097,6 @@ def twosComp2dec(binaryNumber):
     intNumber = int(binaryNumber, 2)
 
     #--- If the number is negative, correct the result ------------------------
-    # If the sign bit is one, correct the result to two's-complement form.
     if binaryNumber[0] == "1":
         intNumber -= 2**len(binaryNumber)
     return intNumber

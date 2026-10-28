@@ -80,12 +80,12 @@ class AcqEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -252,14 +252,14 @@ class AcqEngine():
 
             # Store the zero-based code-phase estimate.
             self.codePhase[PRN-1] = codePhaseMax
-            # Store the peak ratio used as the GLRT acquisition statistic.
+            # Store the primary-to-secondary correlation-peak ratio.
             self.peakMetric[PRN-1] = peakMax / secondPeak
             # Store the searched PRN.
             self.PRN[PRN-1] = PRN
 
             #%% Fine carrier-frequency search =============================
             if self.peakMetric[PRN-1] > settings.acqThreshold :
-                # A GLRT statistic above the threshold indicates that the
+                # A peak ratio above the threshold indicates that the
                 # signal has been found.
                 self.acqFlag[PRN-1] = True
                 # Indicate PRN number of the detected signal
@@ -491,13 +491,13 @@ class AcqEngine():
 
             # Store host-side coarse results. Code phase remains zero-based.
             self.codePhase[PRN-1] = codePhaseMax
-            # The peak ratio is the GLRT acquisition statistic.
+            # Store the primary-to-secondary correlation-peak ratio.
             self.peakMetric[PRN-1] = peakMax / secondPeak
             self.PRN[PRN-1] = PRN
 
             #%% Fine carrier-frequency search =============================
             if self.peakMetric[PRN-1] > settings.acqThreshold :
-                # A GLRT statistic above the threshold indicates that the
+                # A peak ratio above the threshold indicates that the
                 # signal has been found.
                 self.acqFlag[PRN-1] = True
                 # Report the detected PRN.
@@ -537,9 +537,8 @@ class AcqEngine():
                     localPilotCarr = (pilotCode200ms[codePeriodIndex]
                                       * localCarr1ms)
 
-                    # Compute this millisecond's carrier start phase on the host
-                    # in float64 and reduce it modulo 2*pi. Double precision
-                    # avoids the fine-bin shift observed with a float32 start.
+                    # Compute each segment's carrier start phase in float64
+                    # and reduce it modulo 2*pi before single-precision mixing.
                     initialPhase = np.fmod(2 * np.pi * freqMax *
                                     codePeriodIndex * codePeriod, 2 * np.pi)
 
@@ -616,9 +615,7 @@ class AcqEngine():
     def preRun(self):
         """Prepare tracking-channel priority from the acquisition results.
 
-        The acquired signals are sorted according to signal strength. This
-        function can be modified to use another satellite-selection algorithm
-        or to introduce acquired-signal property offsets for testing.
+        The results are sorted by decreasing correlation-peak ratio.
 
         Returns
         -------
@@ -626,7 +623,7 @@ class AcqEngine():
                 Acquisition-result arrays are reordered in place.
         """
         #--- Sort peaks and retain their index information ----------------
-        # Sort peaks to find the strongest signals and retain their indices.
+        # Sort peak ratios in descending order and retain their indices.
         PRNindexes = self.peakMetric.argsort()[::-1]
         self.peakMetric = self.peakMetric.take(PRNindexes)
         self.carrFreq = self.carrFreq.take(PRNindexes)

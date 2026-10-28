@@ -42,7 +42,8 @@ class Channel:
 
     The results contain data- and pilot-channel prompt outputs, absolute E1
     primary-code starting positions, and loop observations saved once per
-    coherent integration interval.
+    coherent integration interval. Pilot results are stored only when
+    pilot tracking is enabled.
 
     Args
     ----
@@ -83,9 +84,10 @@ class Channel:
         self.Q_E = np.zeros(numToProcess)
         self.Q_P = np.zeros(numToProcess)
         self.Q_L = np.zeros(numToProcess)
-        # Pilot-branch prompt correlator outputs.
-        self.Pilot_I_P = np.zeros(numToProcess)
-        self.Pilot_Q_P = np.zeros(numToProcess)
+        # Pilot-branch prompt outputs, saved when pilot tracking is on.
+        if settings.pilotTRKflag == 1:
+            self.Pilot_I_P = np.zeros(numToProcess)
+            self.Pilot_Q_P = np.zeros(numToProcess)
         # Loop discriminators.
         self.dllDiscr = np.full(numToProcess, np.inf)
         self.dllDiscrFilt = np.full(numToProcess, np.inf)
@@ -98,9 +100,10 @@ class Channel:
         cnoCount = numToProcess // settings.CNoVSMinterval
         self.DataCNo = np.zeros(cnoCount)
         self.DataPLD = np.zeros(cnoCount)
-        self.PilotCNo = np.zeros(cnoCount)
-        self.PilotPLD = np.zeros(cnoCount)
-        self.E1_CNo = np.zeros(cnoCount)
+        if settings.pilotTRKflag == 1:
+            self.PilotCNo = np.zeros(cnoCount)
+            self.PilotPLD = np.zeros(cnoCount)
+            self.E1_CNo = np.zeros(cnoCount)
 
 #%% Tracking engine
 class TrackingEngine():
@@ -130,12 +133,12 @@ class TrackingEngine():
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return the receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 
@@ -145,7 +148,7 @@ class TrackingEngine():
 
         The channels are processed using channel-serial tracking mode. Each
         correlator call processes the E1B data and E1C pilot branches on the
-        12-subchip CBOC local-code grid.
+        12-subchip CBOC or BOC(1,1) local-code grid.
 
         Args
         ----
@@ -170,7 +173,7 @@ class TrackingEngine():
         TrackedNr = min(sum(acqResults.acqFlag), settings.numberOfChannels)
 
         #%% Initialize tracking variables =================================
-        # E1B and E1C use a 12-subchip local-code grid.
+        # Both CBOC and BOC(1,1) local code tables use 12 samples per primary chip.
         codeLength = settings.codeLength
         earlyLateSpc = settings.dllCorrelatorSpacing
         corrSettings = copy(settings)
@@ -206,6 +209,12 @@ class TrackingEngine():
         waitbar = WaitBar(numToProcess)
 
         #%% Start processing channels =====================================
+        # Enable/disable full-band tracking using the BOC(6,1) component.
+        if settings.fullBandEn == 1:
+            codeType = 'CBOC'
+        else:
+            codeType = 'BOC11'
+
         for channelNr in range(TrackedNr):
             # Mutable result container for the current E1 channel.
             chResults = trkResults[channelNr]
@@ -220,21 +229,30 @@ class TrackingEngine():
             fid.seek(bytesPerSample * (settings.skipNumberOfSamples 
                                        + int(acqResults.codePhase[channelNr])))
 
-            # Generate E1B/E1C CBOC codes on the 12-subchip local grid and
-            # add one guard subchip at each end for Early/Late indexing.
-            E1BDataCode = generateDataCode(chResults.PRN)
+            # Generate the E1B data waveform as CBOC(+) for full-band tracking
+            # or BOC(1,1) for narrowband tracking. Both are generated directly
+            # on the 12-sample-per-primary-chip local-code grid.
+            E1BDataCode = generateDataCode(chResults.PRN, codeType)
+            # Add 12 guard subchips at each end for Early/Late indexing.
             E1BDataCode = np.concatenate(
-                ([E1BDataCode[-1]], E1BDataCode, [E1BDataCode[0]]))
-            E1CPilotCode = generatePilotCode(chResults.PRN)
+                (E1BDataCode[-12:], E1BDataCode, E1BDataCode[:12]))
+            # Keep both code branches for the QPSK interface in data-only mode.
+            # Generate the E1C pilot waveform as CBOC(-) or BOC(1,1), both
+            # on the 12-sample-per-primary-chip local-code grid.
+            E1CPilotCode = generatePilotCode(chResults.PRN, codeType)
+            # Add 12 guard subchips at each end for Early/Late indexing.
             E1CPilotCode = np.concatenate(
-                ([E1CPilotCode[-1]], E1CPilotCode, [E1CPilotCode[0]]))
+                (E1CPilotCode[-12:], E1CPilotCode, E1CPilotCode[:12]))
             E1CodeTable = np.concatenate((E1BDataCode, E1CPilotCode))
             if settings.correlatorType == 1:
-                # Match MATLAB int32 conversion, which rounds CBOC weights.
+                # Round the scaled CBOC amplitudes to integer code values.
+                # Keep four CBOC levels (-2, -1, +1, +2) in full-band SIMD mode.
+                if settings.fullBandEn == 1:
+                    E1CodeTable = 1.5 * E1CodeTable
                 E1CodeTable = np.rint(E1CodeTable).astype(np.int32)
             elif settings.correlatorType == 2:
-                # Match MATLAB int8 conversion, which rounds CBOC weights.
-                E1CodeTable = np.rint(E1CodeTable).astype(np.int8)
+                # Preserve the CBOC amplitude weights in the GPU code table.
+                E1CodeTable = E1CodeTable.astype(np.float32)
 
             #--- Perform various initializations --------------------------
             # Initial code and carrier NCO frequencies from acquisition.
@@ -314,27 +332,29 @@ class TrackingEngine():
                 # Carrier phase step in rad/sample.
                 carrPhaseStep = (carrFreq * 2.0 * np.pi / settings.samplingFreq)
                 # Convert primary-chip code phase to the 12-subchip grid.
+                # The 12-point prefix adds 11 indices to the phase mapping.
                 if settings.correlatorType == 0:
                     # NumPy reference QPSK correlator.
                     correValues = corrEngine(
                         corrSettings, rawSignal, E1CodeTable, remCarrPhase,
-                        carrPhaseStep, remCodePhase*12, codePhaseStep*12)
+                        carrPhaseStep, remCodePhase*12+11, codePhaseStep*12)
                 elif settings.correlatorType == 1:
                     # CPU SIMD DLL QPSK correlator.
                     correValues = corrEngine.corrEngine(
                         corrSettings, rawSignal, E1CodeTable, remCarrPhase,
-                        carrPhaseStep, remCodePhase*12, codePhaseStep*12)
+                        carrPhaseStep, remCodePhase*12+11, codePhaseStep*12)
                 elif settings.correlatorType == 2:
                     # CUDA DLL QPSK correlator.
                     correValues = corrEngine.corrEngine(
                         corrSettings, rawSignal, E1CodeTable, remCarrPhase,
-                        carrPhaseStep, remCodePhase*12, codePhaseStep*12,
+                        carrPhaseStep, remCodePhase*12+11, codePhaseStep*12,
                         chResults.PRN)
 
                 # Data and pilot Early/Prompt/Late I/Q outputs.
                 I_E, Q_E, I_P, Q_P, I_L, Q_L = correValues[:6]
-                (pilot_I_E, pilot_Q_E, pilot_I_P, pilot_Q_P,
-                 pilot_I_L, pilot_Q_L) = correValues[6:12]
+                if settings.pilotTRKflag == 1:
+                    (pilot_I_E, pilot_Q_E, pilot_I_P, pilot_Q_P,
+                     pilot_I_L, pilot_Q_L) = correValues[6:12]
 
                 #--- Save and update variables for current correlation ----
                 # Save residual phases used by this correlation interval.
@@ -350,9 +370,11 @@ class TrackingEngine():
 
                 #%% Find PLL error and update carrier NCO ==================
                 carrError = np.arctan(Q_P / I_P) / (2.0 * np.pi)
-                pilotCarrError = (np.arctan(pilot_Q_P/pilot_I_P) /
-                                  (2.0*np.pi))
-                carrError = (carrError+pilotCarrError)/2
+                if settings.pilotTRKflag == 1:
+                    # Give data and pilot equal weight when pilot tracking is on.
+                    pilotCarrError = (np.arctan(pilot_Q_P/pilot_I_P) /
+                                      (2.0*np.pi))
+                    carrError = (carrError+pilotCarrError)/2
 
                 # Second-order carrier-loop filter and NCO correction.
                 carrNco = (oldCarrNco+(tau2carr/tau1carr)*
@@ -367,11 +389,12 @@ class TrackingEngine():
                 E = np.sqrt(I_E ** 2 + Q_E ** 2)
                 L = np.sqrt(I_L ** 2 + Q_L ** 2)
                 codeError = (E-L)/(E+L)*(1-earlyLateSpc)
-                pilotE = np.sqrt(pilot_I_E ** 2 + pilot_Q_E ** 2)
-                pilotL = np.sqrt(pilot_I_L ** 2 + pilot_Q_L ** 2)
-                codeErrorQ = ((pilotE-pilotL)/(pilotE+pilotL)
-                              * (1-earlyLateSpc))
-                codeError = (codeError + codeErrorQ) / 2
+                if settings.pilotTRKflag == 1:
+                    pilotE = np.sqrt(pilot_I_E ** 2 + pilot_Q_E ** 2)
+                    pilotL = np.sqrt(pilot_I_L ** 2 + pilot_Q_L ** 2)
+                    codeErrorQ = ((pilotE-pilotL)/(pilotE+pilotL)
+                                  * (1-earlyLateSpc))
+                    codeError = (codeError + codeErrorQ) / 2
 
                 # Second-order code-loop filter and NCO correction.
                 codeNco = (oldCodeNco + (tau2code / tau1code) * 
@@ -394,8 +417,9 @@ class TrackingEngine():
                 chResults.Q_P[loopCnt] = Q_P
                 chResults.Q_L[loopCnt] = Q_L
 
-                chResults.Pilot_I_P[loopCnt] = pilot_I_P
-                chResults.Pilot_Q_P[loopCnt] = pilot_Q_P
+                if settings.pilotTRKflag == 1:
+                    chResults.Pilot_I_P[loopCnt] = pilot_I_P
+                    chResults.Pilot_Q_P[loopCnt] = pilot_Q_P
 
                 #%% C/N0 calculation ======================================
                 if ((loopCnt + 1) % settings.CNoVSMinterval == 0):
@@ -410,13 +434,12 @@ class TrackingEngine():
                     
                     chResults.DataPLD[cnoCnt] = pllDetector[0]
                    
-                    chResults.PilotCNo[cnoCnt] = (CNoValue[1] * 0.5 
-                                                  + tempCNoValue[1] * 0.5)
-                    
-                    chResults.E1_CNo[cnoCnt] = (CNoValue[2] * 0.5
-                                                 + tempCNoValue[2] * 0.5)
-                    
-                    chResults.PilotPLD[cnoCnt] = pllDetector[1]
+                    if settings.pilotTRKflag == 1:
+                        chResults.PilotCNo[cnoCnt] = (CNoValue[1] * 0.5
+                                                      + tempCNoValue[1] * 0.5)
+                        chResults.E1_CNo[cnoCnt] = (CNoValue[2] * 0.5
+                                                     + tempCNoValue[2] * 0.5)
+                        chResults.PilotPLD[cnoCnt] = pllDetector[1]
                     
                 tempCNoValue = CNoValue.copy()
 
@@ -511,33 +534,48 @@ class TrackingEngine():
         corrSettings.dllCorrelatorSpacing = earlyLateSpc*12
 
         #%% Generate E1 code tables for acquired signals ================
+        if settings.fullBandEn == 1:
+            codeType = 'CBOC'
+        else:
+            codeType = 'BOC11'
+
+        # Keep both code branches for the QPSK interface in data-only mode.
         # Each row contains guarded E1B and E1C 12-subchip code branches.
-        branchLength = codeLength*12+2
+        # Each code branch has 12 guard subchips at each end.
+        branchLength = codeLength*12+24
         E1CodeTable = np.empty(
             (channelCnt, branchLength * 2), dtype=np.float64)
 
         for channelNr in range(channelCnt):
             chResults = trkResults[channelNr]
             chResults.PRN = int(acqResults.PRN[channelNr])
-            E1BCodeD = generateDataCode(chResults.PRN)
+            # Generate the E1B data waveform as CBOC(+) for full-band tracking
+            # or BOC(1,1) for narrowband tracking. Both are generated directly
+            # on the 12-sample-per-primary-chip local-code grid.
+            E1BCodeD = generateDataCode(chResults.PRN, codeType)
             E1BCodeD = np.concatenate(
-                ([E1BCodeD[-1]], E1BCodeD, [E1BCodeD[0]]))
-            E1CCodeP = generatePilotCode(chResults.PRN)
+                (E1BCodeD[-12:], E1BCodeD, E1BCodeD[:12]))
+            # Generate the E1C pilot waveform as CBOC(-) or BOC(1,1), both
+            # on the 12-sample-per-primary-chip local-code grid.
+            E1CCodeP = generatePilotCode(chResults.PRN, codeType)
             E1CCodeP = np.concatenate(
-                ([E1CCodeP[-1]], E1CCodeP, [E1CCodeP[0]]))
+                (E1CCodeP[-12:], E1CCodeP, E1CCodeP[:12]))
             E1CodeTable[channelNr] = np.concatenate((E1BCodeD, E1CCodeP))
 
         if settings.correlatorType == 1:
             # SIMD shares an int32 QPSK code table across all channels.
+            # Keep four CBOC levels (-2, -1, +1, +2) in full-band SIMD mode.
+            if settings.fullBandEn == 1:
+                E1CodeTable = 1.5 * E1CodeTable
             E1CodeTable = np.rint(E1CodeTable).astype(np.int32)
         elif settings.correlatorType == 2:
-            # GPU shares an int8 QPSK code table across all channels.
-            E1CodeTable = np.rint(E1CodeTable).astype(np.int8)
+            # Preserve the CBOC amplitude weights in the shared GPU code table.
+            E1CodeTable = E1CodeTable.astype(np.float32)
 
         #%% Initialize waitbar and variables for data reading =============
         # Number of coherent E1 tracking intervals to process.
         numToProcess = trkResults[0].I_P.size
-        # Update the GUI less often for the faster compiled correlators.
+        # Update the GUI less often for the compiled correlators.
         if settings.correlatorType == 0:
             # NumPy reference QPSK correlator.
             barUprate = 5
@@ -651,17 +689,18 @@ class TrackingEngine():
             startIdx = np.asarray(absoluteSample - blkStartIdx,dtype=np.int32)
             # All backends return a 12 x channelCnt matrix containing E1B
             # and E1C Early/Prompt/Late I/Q correlations.
+            # Convert to the 12-subchip grid and add 11 for the extended prefix.
             if settings.correlatorType == 0:
                 # NumPy reference QPSK correlator.
                 correValues = corrEngine(
                     corrSettings, rawSignal, E1CodeTable, remCarrPhase,
-                    carrPhaseStep, remCodePhase*12, codePhaseStep*12, startIdx,
+                    carrPhaseStep, remCodePhase*12+11, codePhaseStep*12, startIdx,
                     chSampSize, isDataRead)
             elif settings.correlatorType in (1, 2):
                 # CPU SIMD or CUDA QPSK correlator.
                 correValues = corrEngine.corrEngine(
                     corrSettings, rawSignal, E1CodeTable, remCarrPhase,
-                    carrPhaseStep, remCodePhase*12, codePhaseStep*12, startIdx,
+                    carrPhaseStep, remCodePhase*12+11, codePhaseStep*12, startIdx,
                     chSampSize, isDataRead)
 
             #%% Update tracking-loop variables for all channels ===========
@@ -671,8 +710,9 @@ class TrackingEngine():
 
                 # E1B and E1C Early, Prompt, and Late outputs.
                 I_E, Q_E, I_P, Q_P, I_L, Q_L = correValues[:6, channelNr]
-                (pilot_I_E, pilot_Q_E, pilot_I_P, pilot_Q_P,
-                 pilot_I_L, pilot_Q_L) = correValues[6:12, channelNr]
+                if settings.pilotTRKflag == 1:
+                    (pilot_I_E, pilot_Q_E, pilot_I_P, pilot_Q_P,
+                     pilot_I_L, pilot_Q_L) = correValues[6:12, channelNr]
 
                 # Save the phases used for this correlation, then advance them
                 # to the next E1 coherent integration interval.
@@ -685,9 +725,11 @@ class TrackingEngine():
 
                 #%% Find PLL error and update carrier NCO ------------------
                 carrError = np.arctan(Q_P / I_P) / (2.0 * np.pi)
-                pilotCarrError = (np.arctan(pilot_Q_P/pilot_I_P) /
-                                  (2.0*np.pi))
-                carrError = (carrError+pilotCarrError)/2
+                if settings.pilotTRKflag == 1:
+                    # Give data and pilot equal weight when pilot tracking is on.
+                    pilotCarrError = (np.arctan(pilot_Q_P/pilot_I_P) /
+                                      (2.0*np.pi))
+                    carrError = (carrError+pilotCarrError)/2
 
                 # Second-order PLL filter output and NCO correction [Hz].
                 carrNco = (oldCarrNco[channelNr]+(tau2carr/tau1carr)*
@@ -704,11 +746,12 @@ class TrackingEngine():
                 E = np.sqrt(I_E ** 2 + Q_E ** 2)
                 L = np.sqrt(I_L ** 2 + Q_L ** 2)
                 codeError = (E-L)/(E+L)*(1-earlyLateSpc)
-                pilotE = np.sqrt(pilot_I_E ** 2 + pilot_Q_E ** 2)
-                pilotL = np.sqrt(pilot_I_L ** 2 + pilot_Q_L ** 2)
-                codeErrorQ = ((pilotE-pilotL)/(pilotE+pilotL)
-                              * (1-earlyLateSpc))
-                codeError = (codeError + codeErrorQ) / 2
+                if settings.pilotTRKflag == 1:
+                    pilotE = np.sqrt(pilot_I_E ** 2 + pilot_Q_E ** 2)
+                    pilotL = np.sqrt(pilot_I_L ** 2 + pilot_Q_L ** 2)
+                    codeErrorQ = ((pilotE-pilotL)/(pilotE+pilotL)
+                                  * (1-earlyLateSpc))
+                    codeError = (codeError + codeErrorQ) / 2
 
                 # DLL filter output and code-NCO correction [chips/s].
                 codeNco = (oldCodeNco[channelNr] + (tau2code / tau1code)
@@ -738,8 +781,9 @@ class TrackingEngine():
                 chResults.Q_P[loopCnt] = Q_P
                 chResults.Q_L[loopCnt] = Q_L
 
-                chResults.Pilot_I_P[loopCnt] = pilot_I_P
-                chResults.Pilot_Q_P[loopCnt] = pilot_Q_P
+                if settings.pilotTRKflag == 1:
+                    chResults.Pilot_I_P[loopCnt] = pilot_I_P
+                    chResults.Pilot_Q_P[loopCnt] = pilot_Q_P
 
                 #%% C/N0 calculation --------------------------------------
                 # Periodically estimate data, pilot, and combined E1 C/N0,
@@ -757,12 +801,12 @@ class TrackingEngine():
                     
                     chResults.DataPLD[cnoCnt] = pllDetector[0]
                     
-                    chResults.PilotCNo[cnoCnt] = (currentCNoValue[1] * 0.5
-                        + cnoSmoothState[channelNr, 1] * 0.5)
-                    
-                    chResults.E1_CNo[cnoCnt] = (currentCNoValue[2] * 0.5
-                                         + cnoSmoothState[channelNr, 2] * 0.5)
-                    chResults.PilotPLD[cnoCnt] = pllDetector[1]
+                    if settings.pilotTRKflag == 1:
+                        chResults.PilotCNo[cnoCnt] = (currentCNoValue[1] * 0.5
+                            + cnoSmoothState[channelNr, 1] * 0.5)
+                        chResults.E1_CNo[cnoCnt] = (currentCNoValue[2] * 0.5
+                                             + cnoSmoothState[channelNr, 2] * 0.5)
+                        chResults.PilotPLD[cnoCnt] = pllDetector[1]
 
                     if channelNr == 0:
                         CNoValue = currentCNoValue
@@ -796,8 +840,6 @@ class TrackingEngine():
                 continue
 
             #%% Select or create and clear the figure =====================
-            # Offset receiver-owned figure numbers to avoid replacing figures
-            # created elsewhere in the receiver.
             fig = plt.figure(channelNr + 200, figsize=(10, 7), clear=True)
             
             fig.suptitle(f"Channel {channelNr + 1} - PRN {chResults.PRN}")

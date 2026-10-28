@@ -164,15 +164,15 @@ class CorrGPUSerialQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Vector = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=1, flags="C_CONTIGUOUS")
+        float32Vector = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
         self._gpuLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Vector,       # L2OCCodeTable
+            float32Vector,    # L2OCCodeTable
             ctypes.c_int,     # L2OCCodeTable.size // 2
             ctypes.c_double,  # remCarrPhase
             ctypes.c_double,  # carrPhaseStep
@@ -198,7 +198,7 @@ class CorrGPUSerialQPSK:
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             L2OCCodeTable - numpy.ndarray
-                        Concatenated guarded int8 L2OCp/CSI codes:
+                        Concatenated guarded float32 L2OCp/CSI codes:
                         ``[L2OCp(last, period, first),
                         CSI(last, period, first)]``.
             remCarrPhase - float
@@ -385,8 +385,8 @@ class CorrGPUParallelQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Table = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=2, flags="C_CONTIGUOUS")
+        float32Table = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
         float64Vector = np.ctypeslib.ndpointer(
@@ -397,7 +397,7 @@ class CorrGPUParallelQPSK:
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Table,        # L2OCCodeTable
+            float32Table,     # L2OCCodeTable
             ctypes.c_int,     # codeLen
             ctypes.c_int,     # channelCnt
             float64Vector,    # remCarrPhase
@@ -426,7 +426,7 @@ class CorrGPUParallelQPSK:
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             L2OCCodeTable - numpy.ndarray
-                        C-contiguous int8 table containing concatenated
+                        C-contiguous float32 table containing concatenated
                         guarded L2OCp/CSI code branches for every channel.
             remCarrPhase - numpy.ndarray
                          Residual carrier phases in radians.
@@ -589,8 +589,7 @@ def corrPyParallelQPSK(settings, rawSignal, L2OCCodeTable, remCarrPhase,
                        startIdx, chSampSize, isDataRead):
     """Correlate all active L2OC channels against one shared IF block.
 
-    This function has the same calling interface as the SIMD and GPU
-    correlators. Each output column is ordered as
+    Each output column is ordered as
     ``[I_E, Q_E, I_P, Q_P, I_L, Q_L, pilot_I_E, pilot_Q_E,
     pilot_I_P, pilot_Q_P, pilot_I_L, pilot_Q_L]``.
 
@@ -619,7 +618,7 @@ def corrPyParallelQPSK(settings, rawSignal, L2OCCodeTable, remCarrPhase,
         chSampSize   - ndarray
                       Number of samples in each channel's code period.
         isDataRead   - int
-                      Shared-data refresh flag retained for interface parity.
+                      Shared-buffer refresh flag (unused in this correlator).
     Returns
     -------
         correValues   - ndarray
@@ -726,7 +725,7 @@ def generateL2OcpBOCCode(PRN, settings=None):
         PRN         - int
                     PRN number of the sequence.
         settings    - object, optional
-                    Receiver settings retained for the common interface.
+                    Receiver settings (unused).
 
     Returns
     -------
@@ -775,9 +774,10 @@ def codeSampling(settings, PRN, sampleLen):
     """Digitize one complete L2OCp code at the sampling frequency."""
     L2OcpCode = generateL2OcpBOCCode(int(PRN))
     fineRate = settings.codeFreqBasis*settings.L2OCFineFactor
+    ts = 1 / settings.samplingFreq
+    tc = 1 / fineRate
     codeValueIndex = np.ceil(
-        np.arange(sampleLen, dtype=np.float64) *
-        fineRate/settings.samplingFreq).astype(np.int64)-1
+        (ts * np.arange(sampleLen, dtype=np.float64)) / tc).astype(np.int64)-1
     codeValueIndex %= settings.codeLength*settings.L2OCFineFactor
     codeValueIndex[0] = 0
     if sampleLen == settings.samplesPerCode:

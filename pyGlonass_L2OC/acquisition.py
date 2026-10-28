@@ -70,17 +70,17 @@ class AcqEngine():
         self.codeFreq = np.zeros(svNum)
         # Acquisition decisions, shape (svNum,); False means not acquired.
         self.acqFlag = np.full(svNum, False)
-        # Receiver settings retained by reference for all acquisition methods.
+        # Receiver settings.
         self._settings = settings
 
     @property
     def settings(self):
-        """Return the receiver-settings object retained by the engine.
+        """Return the receiver settings.
 
         Returns
         -------
             settings   - object
-                       Receiver-settings object retained by the engine.
+                       Receiver settings.
         """
         return self._settings
 

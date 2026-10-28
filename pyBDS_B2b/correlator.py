@@ -791,7 +791,7 @@ def codeSampling(settings, PRN, sampleLen):
     # sampling at (n + 1)Ts and converting MATLAB's one-based indices to
     # zero-based NumPy indices.
     codeValueIndex = np.ceil(
-        ts/tc * np.arange(1, sampleLen + 1)).astype(np.int32) - 1
+        (ts * np.arange(1, sampleLen + 1)) / tc).astype(np.int32) - 1
     codeValueIndex[-1] = settings.codeLength - 1
 
     # Make the digitized version of the B2bI code.

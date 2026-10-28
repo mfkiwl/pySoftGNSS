@@ -74,7 +74,7 @@ class CorrSIMDSerialQPSK:
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
 
-        # Match the argument types and order of the exported C corrEngine() interface.
+        # C corrEngine argument types.
         self._simdLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
@@ -103,21 +103,24 @@ class CorrSIMDSerialQPSK:
             settings    - object
                         Receiver settings containing ``fileType``,
                         ``rShiftBits`` and ``dllCorrelatorSpacing``.
+                        Spacing is already scaled to the 12-point code grid.
             rawSignal   - numpy.ndarray
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             L1CCodeTable - numpy.ndarray
                         Concatenated guarded int32 L1C data/L1C pilot codes:
-                        ``[L1C data(last, period, first),
-                        L1C pilot(last, period, first)]``.
+                        ``[data(last12, period, first12),
+                        pilot(last12, period, first12)]`` on the 12-point grid.
             remCarrPhase - float
                          Residual carrier phase in radians.
             carrPhaseStep - float
                           Carrier phase increment in radians per sample.
             remCodePhase - float
-                         Residual code phase in chips.
+                         Code phase on the 12-point grid, including the
+                         caller's +11 offset for the leading guard.
             codePhaseStep - float
-                          Code phase increment in chips per sample.
+                          Code phase increment in 1/12-primary-chip units
+                          per IF sample.
         Returns
         -------
             correValues - numpy.ndarray
@@ -165,15 +168,15 @@ class CorrGPUSerialQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Vector = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=1, flags="C_CONTIGUOUS")
+        float32Vector = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=1, flags="C_CONTIGUOUS")
 
         self._gpuLibrary.corrEngine.argtypes = [
             ctypes.c_int,     # settings.fileType
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Vector,       # L1CCodeTable
+            float32Vector,    # L1CCodeTable
             ctypes.c_int,     # codeLen for one QPSK branch
             ctypes.c_double,  # remCarrPhase
             ctypes.c_double,  # carrPhaseStep
@@ -195,21 +198,24 @@ class CorrGPUSerialQPSK:
             settings    - object
                         Receiver settings containing ``fileType`` and
                         ``dllCorrelatorSpacing``.
+                        Spacing is already scaled to the 12-point code grid.
             rawSignal   - numpy.ndarray
                         Input int16 IF samples. Complex samples are stored as
                         interleaved I/Q values.
             L1CCodeTable - numpy.ndarray
-                        Concatenated guarded int8 L1C data/L1C pilot codes:
-                        ``[L1C data(last, period, first),
-                        L1C pilot(last, period, first)]``.
+                        Concatenated guarded float32 L1C data/L1C pilot codes:
+                        ``[data(last12, period, first12),
+                        pilot(last12, period, first12)]`` on the 12-point grid.
             remCarrPhase - float
                          Residual carrier phase in radians.
             carrPhaseStep - float
                           Carrier phase increment in radians per sample.
             remCodePhase - float
-                         Residual code phase in chips.
+                         Code phase on the 12-point grid, including the
+                         caller's +11 offset for the leading guard.
             codePhaseStep - float
-                          Code phase increment in chips per sample.
+                          Code phase increment in 1/12-primary-chip units
+                          per IF sample.
             PRN         - int
                         Current satellite PRN used for code caching.
 
@@ -276,7 +282,7 @@ class CorrSIMDParallelQPSK:
         float64Vector = np.ctypeslib.ndpointer(
             dtype=np.float64, ndim=1, flags="C_CONTIGUOUS")
 
-        # Match the argument types and order of the exported C corrEngine() interface.
+        # C corrEngine argument types.
         self._simdLibrary.corrEngine.argtypes = [
             ctypes.c_int,    # settings.fileType
             ctypes.c_int,    # rawSignal.size
@@ -309,19 +315,23 @@ class CorrSIMDParallelQPSK:
             settings    - object
                         Receiver settings containing ``fileType``,
                         ``rShiftBits`` and ``dllCorrelatorSpacing``.
+                        Spacing is already scaled to the 12-point code grid.
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             L1CCodeTable - numpy.ndarray
                         C-contiguous int32 table containing concatenated
                         guarded L1C data/L1C pilot code branches for every channel.
+                        Each branch has 12 guard points at each end.
             remCarrPhase - numpy.ndarray
                          Initial carrier phases in radians.
             carrPhaseStep - numpy.ndarray
                           Carrier phase increments in radians per sample.
             remCodePhase - numpy.ndarray
-                         Initial code phases in chips.
+                         Code phases on the 12-point grid, including the
+                         caller's +11 offset for the leading guard.
             codePhaseStep - numpy.ndarray
-                          Code phase increments in chips per sample.
+                          Code phase increments in 1/12-primary-chip units
+                          per IF sample.
             startIdx    - numpy.ndarray
                         Zero-based logical sample offsets in the shared
                         signal block.
@@ -391,8 +401,8 @@ class CorrGPUParallelQPSK:
 
         int16Vector = np.ctypeslib.ndpointer(
             dtype=np.int16, ndim=1, flags="C_CONTIGUOUS")
-        int8Table = np.ctypeslib.ndpointer(
-            dtype=np.int8, ndim=2, flags="C_CONTIGUOUS")
+        float32Table = np.ctypeslib.ndpointer(
+            dtype=np.float32, ndim=2, flags="C_CONTIGUOUS")
         int32Vector = np.ctypeslib.ndpointer(
             dtype=np.int32, ndim=1, flags="C_CONTIGUOUS")
         float64Vector = np.ctypeslib.ndpointer(
@@ -403,7 +413,7 @@ class CorrGPUParallelQPSK:
             ctypes.c_int,     # rawSignal.size
             ctypes.c_double,  # settings.dllCorrelatorSpacing
             int16Vector,      # rawSignal
-            int8Table,        # L1CCodeTable
+            float32Table,     # L1CCodeTable
             ctypes.c_int,     # codeLen for one QPSK branch
             ctypes.c_int,     # channelCnt
             float64Vector,    # remCarrPhase
@@ -429,19 +439,23 @@ class CorrGPUParallelQPSK:
             settings    - object
                         Receiver settings containing ``fileType`` and
                         ``dllCorrelatorSpacing``.
+                        Spacing is already scaled to the 12-point code grid.
             rawSignal   - numpy.ndarray
                         Shared input int16 IF signal.
             L1CCodeTable - numpy.ndarray
-                        C-contiguous int8 table containing concatenated
+                        C-contiguous float32 table containing concatenated
                         guarded L1C data/L1C pilot code branches for every channel.
+                        Each branch has 12 guard points at each end.
             remCarrPhase - numpy.ndarray
                          Residual carrier phases in radians.
             carrPhaseStep - numpy.ndarray
                           Carrier phase increments in radians per sample.
             remCodePhase - numpy.ndarray
-                         Residual code phases in chips.
+                         Code phases on the 12-point grid, including the
+                         caller's +11 offset for the leading guard.
             codePhaseStep - numpy.ndarray
-                          Code phase increments in chips per sample.
+                          Code phase increments in 1/12-primary-chip units
+                          per IF sample.
             startIdx    - numpy.ndarray
                         Zero-based logical sample offsets in ``rawSignal``.
             chSampSize  - numpy.ndarray
@@ -498,21 +512,24 @@ def corrPySerialQPSK(settings, rawSignal, L1CCodeTable, remCarrPhase,
     ----
         settings      - object
                       Receiver settings containing ``fileType`` and
-                      ``dllCorrelatorSpacing``.
+                      ``dllCorrelatorSpacing`` on the 12-point code grid.
         rawSignal     - ndarray
                       IF samples for one L1C code period. Complex samples are
                       represented by interleaved I and Q values.
         L1CCodeTable - numpy.ndarray
                       Guarded local-code vector containing the L1C data and
-                      pilot codes in that order.
+                      pilot codes in that order; each branch has 12 guard
+                      points at each end.
         remCarrPhase - float
                       Residual carrier phase in radians.
         carrPhaseStep - float
                        Carrier phase increment in radians per sample.
         remCodePhase - float
-                      Residual primary-code phase in chips.
+                      Code phase on the 12-point grid, including the
+                      caller's +11 offset for the leading guard.
         codePhaseStep - float
-                       Code-phase increment in chips per IF sample.
+                       Code-phase increment in 1/12-primary-chip units
+                       per IF sample.
     Returns
     -------
         correValues   - ndarray
@@ -524,7 +541,7 @@ def corrPySerialQPSK(settings, rawSignal, L1CCodeTable, remCarrPhase,
     codeLen = L1CCodeTable.size // 2
     L1CCodeD = L1CCodeTable[:codeLen]
     L1CCodeP = L1CCodeTable[codeLen:]
-    # Define early-late offset in chips.
+    # Define Early/Late offset in 1/12-primary-chip code-table points.
     earlyLateSpc = settings.dllCorrelatorSpacing
 
     # Allocate the L1C data and pilot outputs.
@@ -606,28 +623,30 @@ def corrPyParallelQPSK(settings, rawSignal, L1CCodeTable, remCarrPhase,
     ----
         settings      - object
                       Receiver settings containing ``fileType`` and
-                      ``dllCorrelatorSpacing``.
+                      ``dllCorrelatorSpacing`` on the 12-point code grid.
         rawSignal     - ndarray
                       Shared IF-signal block. Complex samples are stored as
                       interleaved I and Q values.
         L1CCodeTable - numpy.ndarray
                       One guarded L1C data/L1C pilot local-code row for each active
-                      channel.
+                      channel; each branch has 12 guard points at each end.
         remCarrPhase - ndarray
                       Residual carrier phase for each channel, in radians.
         carrPhaseStep - ndarray
                        Carrier phase increment for each channel, in radians
                        per sample.
         remCodePhase - ndarray
-                      Residual code phase for each channel.
+                      Code phases on the 12-point grid, including the
+                      caller's +11 offset for the leading guard.
         codePhaseStep - ndarray
-                       Code-phase increment for each channel.
+                       Code-phase increments in 1/12-primary-chip units
+                       per IF sample.
         startIdx     - ndarray
                       Start sample of each channel within ``rawSignal``.
         chSampSize   - ndarray
                       Number of samples in each channel's code period.
         isDataRead   - int
-                      Shared-data refresh flag retained for interface parity.
+                      Shared-data refresh flag; unused by this correlator.
     Returns
     -------
         correValues   - ndarray
@@ -645,7 +664,7 @@ def corrPyParallelQPSK(settings, rawSignal, L1CCodeTable, remCarrPhase,
     # Output order per channel contains data and pilot values. Each group of
     # six is [I_E, Q_E, I_P, Q_P, I_L, Q_L].
     correValues = np.zeros((12, channelCnt), dtype=np.float64)
-    # Define early-late offset in primary-code chips.
+    # Define Early/Late offset in 1/12-primary-chip code-table points.
     earlyLateSpc = settings.dllCorrelatorSpacing
 
     for channelNr in range(channelCnt):
@@ -654,8 +673,7 @@ def corrPyParallelQPSK(settings, rawSignal, L1CCodeTable, remCarrPhase,
         blksize = chSampSize[channelNr]
         codeStartIdx = startIdx[channelNr]
 
-        # Get the two local-code branches for the current channel. The table
-        # already contains the guard values required by ceil(tcode).
+        # Data and pilot branches, each with 12 guard points at both ends.
         L1CCode = L1CCodeTable[channelNr, :]
         codeLen = L1CCode.size // 2
         L1CCodeD = L1CCode[:codeLen]
@@ -692,8 +710,7 @@ def corrPyParallelQPSK(settings, rawSignal, L1CCodeTable, remCarrPhase,
         promptCodeP = L1CCodeP[tcode]
 
         # --- Generate the carrier frequency to mix the signal to baseband ---
-        # carrPhaseStep is already the carrier phase step in radians per
-        # sample, so form the local carrier directly from sample indices.
+        # Local carrier phase in radians.
         trigarg = (carrPhaseStep[channelNr] * sampleIndex
                    + remCarrPhase[channelNr])
         carrsig = np.exp(-1j * trigarg)
@@ -726,13 +743,11 @@ def corrPyParallelQPSK(settings, rawSignal, L1CCodeTable, remCarrPhase,
 
 
 #%% GPS L1C data-code generation
-def generateDataBOC11(settings, PRN):
+def generateDataBOC11(PRN):
     """Generate the GPS L1C data-channel BOC(1,1) primary code.
 
     Args
     ----
-        settings    - object
-                    Receiver settings.
         PRN         - int
                     Satellite PRN number.
 
@@ -740,7 +755,8 @@ def generateDataBOC11(settings, PRN):
     -------
         L1CData     - numpy.ndarray
                     L1C data-channel code after extension insertion and
-                    BOC(1,1) subcarrier modulation.
+                    BOC(1,1) subcarrier modulation, with 12 code-table
+                    points per primary chip to match the TMBOC grid.
     """
     # L1C data primary-code table. Column 1 is the Weil phase difference w;
     # column 2 is the 7-chip extension insertion point p.
@@ -791,25 +807,44 @@ def generateDataBOC11(settings, PRN):
     L1CData = np.empty(L1CWithExtension.size * 2, dtype=np.int8)
     L1CData[::2] = L1CWithExtension
     L1CData[1::2] = -L1CWithExtension
+    # Expand BOC(1,1) from 2 to 12 code-table points per primary chip
+    # to match the TMBOC grid.
+    L1CData = np.repeat(L1CData, 6)
     return L1CData
 
 
 #%% GPS L1C pilot-code generation
-def generatePilotTMBOC61(settings, PRN):
-    """Generate the GPS L1C pilot-channel TMBOC(6,1,4/33) code.
+def generatePilotTMBOC61(settings, PRN, codeType=None):
+    """Generate the GPS L1C pilot TMBOC code or its BOC(1,1) component.
+
+    PRNs 1 to 63 are supported.
 
     Args
     ----
         settings    - object
-                    Receiver settings.
+                    Receiver settings. fullBandEn selects the default code:
+                    1 - TMBOC; 0 - BOC(1,1) component.
         PRN         - int
                     Satellite PRN number.
+        codeType    - str, optional
+                    'TMBOC' or 'BOC11'. If omitted, use settings.fullBandEn.
+                    'BOC11' retains the 29/33 BOC(1,1) chips and sets the
+                    remaining 4/33 BOC(6,1) chips to zero.
 
     Returns
     -------
         L1CPilot    - numpy.ndarray
-                    L1C pilot-channel code after TMBOC modulation.
+                    Local waveform with 12 code-table points per primary
+                    chip, without tracking guard points. Values are -1/+1
+                    for TMBOC and -1/0/+1 for the BOC(1,1) component.
     """
+    # Use the configured tracking mode unless the caller specifies a code type.
+    if codeType is None:
+        if settings.fullBandEn == 1:
+            codeType = 'TMBOC'
+        elif settings.fullBandEn == 0:
+            codeType = 'BOC11'
+
     # L1C pilot primary-code table. Column 1 is the Weil phase difference w;
     # column 2 is the 7-chip extension insertion point p.
     wp_pilot = np.array((
@@ -854,8 +889,9 @@ def generatePilotTMBOC61(settings, PRN):
     L1CWithExtension = np.concatenate(
         (Primary[:p - 1], extendedSequence, Primary[p - 1:]))
 
-    #%% Apply TMBOC(6,1,4/33) modulation.
-    # Use 12 samples per chip so BOC(1,1) and BOC(6,1) share one grid.
+    #%% Apply TMBOC modulation or retain only its BOC(1,1) component.
+    # Use 12 code-table points per primary chip so BOC(1,1) and BOC(6,1)
+    # share one grid; these are not IF samples.
     samplesPerChip = 12
     numChips = L1CWithExtension.size
     L1CPilot = np.empty(numChips * samplesPerChip, dtype=np.int8)
@@ -864,10 +900,14 @@ def generatePilotTMBOC61(settings, PRN):
     subcarrierBOC11 = np.r_[
         np.ones(6, dtype=np.int8), -np.ones(6, dtype=np.int8)]
 
-    # BOC(6,1): six alternating +1/-1 subcarrier cycles per chip.
-    subcarrierBOC61 = np.tile(np.array([1, -1], dtype=np.int8), 6)
+    # In narrowband mode, suppress the BOC(6,1) chips without changing the grid.
+    if codeType == 'TMBOC':
+        subcarrierBOC61 = np.tile(np.array([1, -1], dtype=np.int8), 6)
+    elif codeType == 'BOC11':
+        subcarrierBOC61 = np.zeros(12, dtype=np.int8)
 
     # ICD TMBOC pattern: 4 of every 33 chips use BOC(6,1).
+    # These positions are zero in the BOC(1,1)-only local waveform.
     tm_indices = (0, 4, 6, 29)
     for jj in range(numChips):
         currentSub = (subcarrierBOC61 if jj % 33 in tm_indices
@@ -881,8 +921,7 @@ def generatePilotTMBOC61(settings, PRN):
 def generate2ndCode(PRN):
     """Generate the GPS L1C pilot secondary code in bipolar format.
 
-    This implementation supports PRNs 1 to 63, which use the single-LFSR
-    form.
+    PRNs 1 to 63 use the single-LFSR form.
 
     Args
     ----
@@ -953,7 +992,7 @@ def generate2ndCode(PRN):
 
 #%% GPS L1C-code sampling
 def codeSampling(settings, PRN, sampleLen, component):
-    """Generate and sample one GPS L1C spreading waveform.
+    """Generate and sample one GPS L1C spreading waveform for acquisition.
 
     Args
     ----
@@ -962,9 +1001,11 @@ def codeSampling(settings, PRN, sampleLen, component):
         PRN           - int
                       PRN number of the sequence.
         sampleLen     - int
-                      Number of output samples.
+                      Number of IF samples in one primary-code period.
         component     - str
                       L1C component: ``"data"`` or ``"pilot"``.
+                      Pilot sampling retains BOC(1,1) and zeros BOC(6,1)
+                      positions, independent of fullBandEn.
 
     Returns
     -------
@@ -973,22 +1014,24 @@ def codeSampling(settings, PRN, sampleLen, component):
     """
     #--- Generate the selected L1C spreading waveform ---------------------
     if component == "data":
-        code = generateDataBOC11(settings, PRN)
-        codeSubchips = 2
+        code = generateDataBOC11(PRN)
+        codeSubchips = 12
     elif component == "pilot":
-        code = generatePilotTMBOC61(settings, PRN)
+        # Acquisition uses BOC(1,1) with BOC(6,1) positions zeroed.
+        code = generatePilotTMBOC61(settings, PRN, 'BOC11')
         codeSubchips = 12
     else:
         raise ValueError(f"Invalid L1C component: {component}")
 
     #--- Find time constants ----------------------------------------------
+    # Both generated branches use 12 code-table points per primary chip.
     ts = 1 / settings.samplingFreq
     tc = 1 / settings.codeFreqBasis / codeSubchips
 
     #=== Digitizing ========================================================
     #--- Make index array to read L1C code values -------------------------
     codeValueIndex = np.ceil(
-        ts / tc * np.arange(1, sampleLen + 1)).astype(np.int32) - 1
+        (ts * np.arange(1, sampleLen + 1)) / tc).astype(np.int32) - 1
 
     #--- Correct the first and last indices due to rounding issues --------
     codeValueIndex[0] = 0

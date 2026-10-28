@@ -315,7 +315,7 @@ def calculatePseudoranges(trackResults, subFrameStart, TOW, currMeasSample,
         settings      - object
                       Receiver settings.
         searchIndex   - numpy.ndarray
-                      Per-channel search positions used by the Python port.
+                      Cached per-channel search positions, updated in place.
     Returns
     -------
         pseudoranges  - numpy.ndarray
@@ -647,7 +647,8 @@ def leastSquarePos(satpos, obs, settings):
     Returns
     -------
         pos         - numpy.ndarray
-                    Receiver ECEF position and clock error ``[X, Y, Z, dt]``.
+                    Receiver ECEF position and clock bias ``[X, Y, Z, dt]``,
+                    all in metres.
         el          - numpy.ndarray
                     Satellite elevation angles in degrees.
         az          - numpy.ndarray
@@ -914,7 +915,7 @@ def cart2utm(X, Y, Z, zone):
         N           - float
                     UTM northing.
         U           - float
-                    UTM up coordinate.
+                    ED50 ellipsoidal height in metres, not local ENU up.
     """
     from math import atan2, atanh
 
